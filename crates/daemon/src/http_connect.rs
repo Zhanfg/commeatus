@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use commeatus_core::{DestinationHost, Runtime};
+use commeatus_core::{DestinationHost, Runtime, TransportProtocol};
 
 use crate::proxy::{self, Authorization, Target};
 
@@ -26,7 +26,7 @@ pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
         }
     };
 
-    if proxy::authorize(&runtime, &target) == Authorization::Reject {
+    if proxy::authorize(&runtime, &target, TransportProtocol::Tcp) == Authorization::Reject {
         client.write_all(
             b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         )?;
@@ -43,9 +43,12 @@ pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
         }
     };
 
-    client.write_all(
-        b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: Commeatus/0.1.0-alpha.1\r\n\r\n",
-    )?;
+    let response = concat!(
+        "HTTP/1.1 200 Connection Established\r\nProxy-Agent: Commeatus/",
+        env!("CARGO_PKG_VERSION"),
+        "\r\n\r\n"
+    );
+    client.write_all(response.as_bytes())?;
     if !buffered_tunnel_bytes.is_empty() {
         remote.write_all(&buffered_tunnel_bytes)?;
     }
