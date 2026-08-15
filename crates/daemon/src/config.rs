@@ -102,22 +102,21 @@ impl ConfigError {
 }
 
 impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(line) = self.line {
-            write!(f, "config line {line}: {}", self.message)
-        } else {
-            f.write_str(&self.message)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.line {
+            Some(line) => write!(formatter, "config line {line}: {}", self.message),
+            None => formatter.write_str(&self.message),
         }
     }
 }
 
 impl std::error::Error for ConfigError {}
 
-/// Active configuration holder with transactional replacement semantics.
+/// Active configuration with candidate-then-swap semantics.
 ///
-/// Blocklist and hosts assets are fully read and compiled as part of a
-/// candidate. Invalid assets therefore cannot partially mutate the active
-/// runtime or DNS engine.
+/// Referenced blocklist and DNS hosts assets are fully read and compiled before
+/// the candidate replaces the active snapshot. A failed candidate therefore
+/// leaves the Last Known Good runtime and DNS engine untouched.
 pub struct ConfigStore {
     active: RwLock<Arc<CompiledConfig>>,
     asset_root: PathBuf,
@@ -129,9 +128,8 @@ impl ConfigStore {
     }
 
     pub fn new_at(text: &str, asset_root: &Path) -> Result<Self, ConfigError> {
-        let compiled = Arc::new(parse_config_at(text, asset_root)?);
         Ok(Self {
-            active: RwLock::new(compiled),
+            active: RwLock::new(Arc::new(parse_config_at(text, asset_root)?)),
             asset_root: asset_root.to_path_buf(),
         })
     }
@@ -184,11 +182,11 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
         if line.is_empty() {
             continue;
         }
-
-        let fields: Vec<&str> = line.split_whitespace().collect();
+        let fields = line.split_whitespace().collect::<Vec<_>>();
         match fields.first().copied() {
             Some("version") => {
-                if fields.len() != 2 || fields[1] != "1" {
+                expect_fields(&fields, 2, line_number, "version syntax is `version 1`")?;
+                if fields[1] != "1" {
                     return Err(ConfigError::at(line_number, "expected exactly `version 1`"));
                 }
                 if version_seen {
@@ -197,12 +195,12 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 version_seen = true;
             }
             Some("allow-public-listen") => {
-                if fields.len() != 2 {
-                    return Err(ConfigError::at(
-                        line_number,
-                        "allow-public-listen syntax is `allow-public-listen <true|false>`",
-                    ));
-                }
+                expect_fields(
+                    &fields,
+                    2,
+                    line_number,
+                    "allow-public-listen syntax is `allow-public-listen <true|false>`",
+                )?;
                 if allow_public_listen.is_some() {
                     return Err(ConfigError::at(
                         line_number,
@@ -221,12 +219,12 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 });
             }
             Some("listen") => {
-                if fields.len() != 3 {
-                    return Err(ConfigError::at(
-                        line_number,
-                        "listen syntax is `listen <socks5|http> <ip:port>`",
-                    ));
-                }
+                expect_fields(
+                    &fields,
+                    3,
+                    line_number,
+                    "listen syntax is `listen <socks5|http> <ip:port>`",
+                )?;
                 if listeners.len() >= MAX_LISTENERS {
                     return Err(ConfigError::at(
                         line_number,
@@ -261,36 +259,31 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 listeners.push(ListenerConfig { protocol, address });
             }
             Some("default") => {
-                if fields.len() != 2 {
-                    return Err(ConfigError::at(
-                        line_number,
-                        "default syntax is `default <direct|reject>`",
-                    ));
-                }
+                expect_fields(
+                    &fields,
+                    2,
+                    line_number,
+                    "default syntax is `default <direct|reject>`",
+                )?;
                 if default_action.is_some() {
                     return Err(ConfigError::at(line_number, "duplicate default directive"));
                 }
                 default_action = Some(parse_action(fields[1], line_number)?);
             }
             Some("blocklist") => {
-                if fields.len() != 2 {
-                    return Err(ConfigError::at(
-                        line_number,
-                        "blocklist syntax is `blocklist <path>`; paths with whitespace are not supported yet",
-                    ));
-                }
+                expect_fields(
+                    &fields,
+                    2,
+                    line_number,
+                    "blocklist syntax is `blocklist <path>`; paths with whitespace are not supported yet",
+                )?;
                 if blocklists.len() >= MAX_BLOCKLISTS {
                     return Err(ConfigError::at(
                         line_number,
                         format!("blocklist count exceeds {MAX_BLOCKLISTS}"),
                     ));
                 }
-                if rules.len() >= MAX_RULES {
-                    return Err(ConfigError::at(
-                        line_number,
-                        format!("rule count exceeds {MAX_RULES}"),
-                    ));
-                }
+                ensure_rule_capacity(rules.len(), line_number)?;
                 let source = resolve_asset_path(asset_root, fields[1]);
                 if !blocklist_paths.insert(source.clone()) {
                     return Err(ConfigError::at(line_number, "duplicate blocklist path"));
@@ -309,12 +302,12 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 });
             }
             Some("hosts") => {
-                if fields.len() != 2 {
-                    return Err(ConfigError::at(
-                        line_number,
-                        "hosts syntax is `hosts <path>`; paths with whitespace are not supported yet",
-                    ));
-                }
+                expect_fields(
+                    &fields,
+                    2,
+                    line_number,
+                    "hosts syntax is `hosts <path>`; paths with whitespace are not supported yet",
+                )?;
                 if hosts.len() >= MAX_HOSTS_FILES {
                     return Err(ConfigError::at(
                         line_number,
@@ -334,12 +327,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 });
             }
             Some("rule") => {
-                if rules.len() >= MAX_RULES {
-                    return Err(ConfigError::at(
-                        line_number,
-                        format!("rule count exceeds {MAX_RULES}"),
-                    ));
-                }
+                ensure_rule_capacity(rules.len(), line_number)?;
                 rules.push(parse_rule(&fields, line_number, next_rule_id)?);
                 next_rule_id += 1;
             }
@@ -380,6 +368,30 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
     })
 }
 
+fn expect_fields(
+    fields: &[&str],
+    expected: usize,
+    line: usize,
+    message: &'static str,
+) -> Result<(), ConfigError> {
+    if fields.len() == expected {
+        Ok(())
+    } else {
+        Err(ConfigError::at(line, message))
+    }
+}
+
+fn ensure_rule_capacity(current: usize, line: usize) -> Result<(), ConfigError> {
+    if current < MAX_RULES {
+        Ok(())
+    } else {
+        Err(ConfigError::at(
+            line,
+            format!("rule count exceeds {MAX_RULES}"),
+        ))
+    }
+}
+
 fn resolve_asset_path(root: &Path, value: &str) -> PathBuf {
     let path = Path::new(value);
     if path.is_absolute() {
@@ -393,27 +405,7 @@ fn load_blocklist(
     path: &Path,
     line: usize,
 ) -> Result<(commeatus_core::DomainFilter, BlocklistStats), ConfigError> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        ConfigError::at(
-            line,
-            format!("cannot stat blocklist {}: {error}", path.display()),
-        )
-    })?;
-    if metadata.len() > MAX_BLOCKLIST_BYTES as u64 {
-        return Err(ConfigError::at(
-            line,
-            format!(
-                "blocklist {} exceeds {MAX_BLOCKLIST_BYTES} byte limit",
-                path.display()
-            ),
-        ));
-    }
-    let text = fs::read_to_string(path).map_err(|error| {
-        ConfigError::at(
-            line,
-            format!("cannot read blocklist {}: {error}", path.display()),
-        )
-    })?;
+    let text = read_bounded_asset(path, MAX_BLOCKLIST_BYTES, "blocklist", line)?;
     let compiled = compile_blocklist(&text).map_err(|error| {
         ConfigError::at(
             line,
@@ -425,31 +417,37 @@ fn load_blocklist(
 }
 
 fn load_hosts(path: &Path, line: usize) -> Result<HostsTable, ConfigError> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        ConfigError::at(
-            line,
-            format!("cannot stat hosts {}: {error}", path.display()),
-        )
-    })?;
-    if metadata.len() > MAX_HOSTS_BYTES as u64 {
-        return Err(ConfigError::at(
-            line,
-            format!(
-                "hosts {} exceeds {MAX_HOSTS_BYTES} byte limit",
-                path.display()
-            ),
-        ));
-    }
-    let text = fs::read_to_string(path).map_err(|error| {
-        ConfigError::at(
-            line,
-            format!("cannot read hosts {}: {error}", path.display()),
-        )
-    })?;
+    let text = read_bounded_asset(path, MAX_HOSTS_BYTES, "hosts", line)?;
     HostsTable::parse(&text).map_err(|error| {
         ConfigError::at(
             line,
             format!("cannot compile hosts {}: {error}", path.display()),
+        )
+    })
+}
+
+fn read_bounded_asset(
+    path: &Path,
+    max_bytes: usize,
+    kind: &'static str,
+    line: usize,
+) -> Result<String, ConfigError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        ConfigError::at(
+            line,
+            format!("cannot stat {kind} {}: {error}", path.display()),
+        )
+    })?;
+    if metadata.len() > max_bytes as u64 {
+        return Err(ConfigError::at(
+            line,
+            format!("{kind} {} exceeds {max_bytes} byte limit", path.display()),
+        ));
+    }
+    fs::read_to_string(path).map_err(|error| {
+        ConfigError::at(
+            line,
+            format!("cannot read {kind} {}: {error}", path.display()),
         )
     })
 }
@@ -469,7 +467,6 @@ fn parse_rule(fields: &[&str], line: usize, id: u64) -> Result<PolicyRule, Confi
             "rule syntax is `rule <direct|reject> <matcher> [value]`",
         ));
     }
-
     let action = parse_action(fields[1], line)?;
     let matcher = match fields[2] {
         "any" if fields.len() == 3 => Matcher::Any,
@@ -527,14 +524,18 @@ fn parse_rule(fields: &[&str], line: usize, id: u64) -> Result<PolicyRule, Confi
 fn normalize_domain(value: &str, line: usize) -> Result<String, ConfigError> {
     let normalized = value.trim_matches('.').to_ascii_lowercase();
     if normalized.is_empty() || normalized.len() > 253 {
-        return Err(ConfigError::at(line, "invalid domain matcher"));
+        Err(ConfigError::at(line, "invalid domain matcher"))
+    } else {
+        Ok(normalized)
     }
-    Ok(normalized)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        net::IpAddr,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use commeatus_core::{
         Destination, DestinationHost, ExecutionAction, FlowContext, FlowId, NetworkContext,
@@ -649,7 +650,7 @@ mod tests {
         assert_eq!(snapshot.hosts().len(), 1);
         assert_eq!(
             snapshot.dns().resolve("service.test").unwrap(),
-            vec!["203.0.113.7".parse().unwrap()]
+            vec!["203.0.113.7".parse::<IpAddr>().unwrap()]
         );
         fs::remove_dir_all(root).unwrap();
     }
