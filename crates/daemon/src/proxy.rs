@@ -1,8 +1,9 @@
 use std::{
     io,
-    net::{Shutdown, SocketAddr, TcpStream},
+    net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
     sync::atomic::{AtomicU64, Ordering},
     thread,
+    time::{Duration, Instant},
 };
 
 use commeatus_core::{
@@ -11,6 +12,8 @@ use commeatus_core::{
 };
 
 static NEXT_FLOW_ID: AtomicU64 = AtomicU64::new(1);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_RESOLVED_ADDRESSES: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Target {
@@ -59,12 +62,48 @@ pub fn authorize(runtime: &Runtime, target: &Target) -> Authorization {
 }
 
 pub fn connect_direct(target: &Target) -> io::Result<TcpStream> {
-    let stream = match &target.host {
-        DestinationHost::Domain(domain) => TcpStream::connect((domain.as_str(), target.port))?,
-        DestinationHost::Ip(address) => TcpStream::connect(SocketAddr::new(*address, target.port))?,
+    let addresses = resolve_target(target)?;
+    let deadline = Instant::now() + CONNECT_TIMEOUT;
+    let mut last_error = None;
+
+    for address in addresses {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match TcpStream::connect_timeout(&address, remaining) {
+            Ok(stream) => {
+                stream.set_nodelay(true)?;
+                return Ok(stream);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "no resolved address connected before timeout",
+        )
+    }))
+}
+
+fn resolve_target(target: &Target) -> io::Result<Vec<SocketAddr>> {
+    let mut addresses = match &target.host {
+        DestinationHost::Domain(domain) => (domain.as_str(), target.port)
+            .to_socket_addrs()?
+            .take(MAX_RESOLVED_ADDRESSES)
+            .collect::<Vec<_>>(),
+        DestinationHost::Ip(address) => vec![SocketAddr::new(*address, target.port)],
     };
-    stream.set_nodelay(true)?;
-    Ok(stream)
+    addresses.dedup();
+    if addresses.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "destination resolved to no usable addresses",
+        ));
+    }
+    Ok(addresses)
 }
 
 /// Copy bytes in both directions while preserving TCP half-close semantics.
@@ -124,5 +163,17 @@ mod tests {
         let client = connect_direct(&target).unwrap();
         let (_server, _) = listener.accept().unwrap();
         assert_eq!(client.peer_addr().unwrap(), address);
+    }
+
+    #[test]
+    fn resolver_deduplicates_and_bounds_addresses() {
+        let target = Target::new(DestinationHost::Domain("localhost".to_owned()), 80).unwrap();
+        let addresses = resolve_target(&target).unwrap();
+        assert!(!addresses.is_empty());
+        assert!(addresses.len() <= MAX_RESOLVED_ADDRESSES);
+        let mut unique = addresses.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), addresses.len());
     }
 }
