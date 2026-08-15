@@ -16,7 +16,7 @@ pub struct Runtime {
 
 impl Runtime {
     #[must_use]
-    pub const fn new(policy: PolicyEngine) -> Self {
+    pub fn new(policy: PolicyEngine) -> Self {
         Self { policy }
     }
 
