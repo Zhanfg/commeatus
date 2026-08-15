@@ -6,13 +6,18 @@ use std::{
 };
 
 use commeatus_core::{DestinationHost, Runtime, TransportProtocol};
+use commeatus_dns::DnsEngine;
 
 use crate::proxy::{self, Authorization, Target};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
+pub fn handle(
+    mut client: TcpStream,
+    runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
+) -> io::Result<()> {
     client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
@@ -33,7 +38,7 @@ pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
         return Ok(());
     }
 
-    let mut remote = match proxy::connect_direct(&target) {
+    let mut remote = match proxy::connect_direct(&target, &dns) {
         Ok(remote) => remote,
         Err(error) => {
             let _ = client.write_all(
