@@ -45,7 +45,10 @@ tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
   sha256sum -c SHA256SUMS
 )
 
-tar -tzf "dist/$linux_dir.tar.gz" | grep -q "$linux_dir/commeatus$"
-tar -tzf "dist/$android_dir.tar.gz" | grep -q "$android_dir/commeatus$"
-tar -tzf "dist/$linux_dir.tar.gz" | grep -q "$linux_dir/commeatus.conf$"
-tar -tzf "dist/$android_dir.tar.gz" | grep -q "$android_dir/BUILD-INFO.txt$"
+# Ask tar for the exact members instead of piping a full listing into grep -q.
+# Under `set -o pipefail`, grep's early exit would close the pipe and make tar
+# report SIGPIPE even when the member was present.
+tar -tzf "dist/$linux_dir.tar.gz" "$linux_dir/commeatus" >/dev/null
+tar -tzf "dist/$android_dir.tar.gz" "$android_dir/commeatus" >/dev/null
+tar -tzf "dist/$linux_dir.tar.gz" "$linux_dir/commeatus.conf" >/dev/null
+tar -tzf "dist/$android_dir.tar.gz" "$android_dir/BUILD-INFO.txt" >/dev/null
