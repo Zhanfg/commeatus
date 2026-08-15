@@ -1,0 +1,8 @@
+[package]
+name = "commeatus-dns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Commeatus DNS engine and resolver failure domain"
