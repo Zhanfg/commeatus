@@ -210,7 +210,9 @@ fn parse_domain(value: &str, line: usize) -> Result<String, BlocklistError> {
     if value.is_empty()
         || value.len() > 253
         || !value.is_ascii()
-        || value.split('.').any(|label| label.is_empty() || label.len() > 63)
+        || value
+            .split('.')
+            .any(|label| label.is_empty() || label.len() > 63)
     {
         return Err(BlocklistError::at(line, "invalid domain"));
     }
