@@ -136,10 +136,7 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
         match fields.first().copied() {
             Some("version") => {
                 if fields.len() != 2 || fields[1] != "1" {
-                    return Err(ConfigError::at(
-                        line_number,
-                        "expected exactly `version 1`",
-                    ));
+                    return Err(ConfigError::at(line_number, "expected exactly `version 1`"));
                 }
                 if version_seen {
                     return Err(ConfigError::at(line_number, "duplicate version directive"));
@@ -173,7 +170,10 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
                     .parse()
                     .map_err(|_| ConfigError::at(line_number, "invalid listener address"))?;
                 if address.port() == 0 {
-                    return Err(ConfigError::at(line_number, "listener port must not be zero"));
+                    return Err(ConfigError::at(
+                        line_number,
+                        "listener port must not be zero",
+                    ));
                 }
                 if !listener_addresses.insert(address) {
                     return Err(ConfigError::at(
@@ -233,10 +233,7 @@ fn parse_action(value: &str, line: usize) -> Result<PolicyAction, ConfigError> {
     match value {
         "direct" => Ok(PolicyAction::Route(Endpoint::Direct)),
         "reject" => Ok(PolicyAction::Reject(RejectReason::Policy)),
-        _ => Err(ConfigError::at(
-            line,
-            "action must be `direct` or `reject`",
-        )),
+        _ => Err(ConfigError::at(line, "action must be `direct` or `reject`")),
     }
 }
 
