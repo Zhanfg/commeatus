@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 
 use crate::{
-    flow::{DestinationHost, FlowContext, TransportProtocol},
+    flow::{DestinationHost, FlowContext, NetworkKind, TransportProtocol},
     plan::{Endpoint, RejectReason},
 };
 
@@ -51,7 +51,7 @@ pub enum Matcher {
     Ip(IpAddr),
     Port(u16),
     Transport(TransportProtocol),
-    Network(crate::flow::NetworkKind),
+    Network(NetworkKind),
     All(Vec<Self>),
     AnyOf(Vec<Self>),
     Not(Box<Self>),
@@ -76,8 +76,8 @@ impl Matcher {
                 DestinationHost::Domain(domain) => domain_matches_suffix(domain, suffix),
                 DestinationHost::Ip(_) => false,
             },
-            Self::Ip(expected) => match flow.destination.host {
-                DestinationHost::Ip(actual) => actual == *expected,
+            Self::Ip(expected) => match &flow.destination.host {
+                DestinationHost::Ip(actual) => actual == expected,
                 DestinationHost::Domain(_) => false,
             },
             Self::Port(port) => flow.destination.port == *port,
@@ -102,7 +102,10 @@ fn domain_matches_suffix(domain: &str, suffix: &str) -> bool {
         return true;
     }
 
-    let Some(prefix_len) = domain.len().checked_sub(suffix.len() + 1) else {
+    let Some(required_len) = suffix.len().checked_add(1) else {
+        return false;
+    };
+    let Some(prefix_len) = domain.len().checked_sub(required_len) else {
         return false;
     };
 
