@@ -181,9 +181,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;
-    use crate::flow::{
-        Destination, FlowId, NetworkContext, SourceContext, TransportProtocol,
-    };
+    use crate::flow::{Destination, FlowId, NetworkContext, SourceContext, TransportProtocol};
 
     fn domain_flow(domain: &str, uid: u32) -> FlowContext {
         FlowContext::new(
