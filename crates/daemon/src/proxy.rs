@@ -33,7 +33,7 @@ impl Target {
     }
 
     #[must_use]
-    pub fn flow(&self) -> FlowContext {
+    pub fn flow(&self, transport: TransportProtocol) -> FlowContext {
         FlowContext::new(
             FlowId::new(NEXT_FLOW_ID.fetch_add(1, Ordering::Relaxed)),
             SourceContext::default(),
@@ -41,7 +41,7 @@ impl Target {
                 host: self.host.clone(),
                 port: self.port,
             },
-            TransportProtocol::Tcp,
+            transport,
             NetworkContext::default(),
         )
     }
@@ -54,8 +54,8 @@ pub enum Authorization {
 }
 
 #[must_use]
-pub fn authorize(runtime: &Runtime, target: &Target) -> Authorization {
-    match runtime.plan(&target.flow()).action {
+pub fn authorize(runtime: &Runtime, target: &Target, transport: TransportProtocol) -> Authorization {
+    match runtime.plan(&target.flow(transport)).action {
         ExecutionAction::Route { .. } => Authorization::Direct,
         ExecutionAction::Reject { .. } => Authorization::Reject,
     }
@@ -88,7 +88,7 @@ pub fn connect_direct(target: &Target) -> io::Result<TcpStream> {
     }))
 }
 
-fn resolve_target(target: &Target) -> io::Result<Vec<SocketAddr>> {
+pub(crate) fn resolve_target(target: &Target) -> io::Result<Vec<SocketAddr>> {
     let mut addresses = match &target.host {
         DestinationHost::Domain(domain) => (domain.as_str(), target.port)
             .to_socket_addrs()?
@@ -164,7 +164,32 @@ mod tests {
             PolicyAction::Reject(commeatus_core::RejectReason::Policy),
         ));
         let target = Target::new(DestinationHost::Ip(Ipv4Addr::LOCALHOST.into()), 80).unwrap();
-        assert_eq!(authorize(&runtime, &target), Authorization::Reject);
+        assert_eq!(
+            authorize(&runtime, &target, TransportProtocol::Tcp),
+            Authorization::Reject
+        );
+    }
+
+    #[test]
+    fn transport_is_part_of_policy_authorization() {
+        let runtime = Runtime::new(PolicyEngine::new(
+            vec![commeatus_core::PolicyRule {
+                id: commeatus_core::RuleId::new(1),
+                tier: commeatus_core::PolicyTier::UserHard,
+                matcher: commeatus_core::Matcher::Transport(TransportProtocol::Udp),
+                action: PolicyAction::Reject(commeatus_core::RejectReason::Policy),
+            }],
+            PolicyAction::Route(Endpoint::Direct),
+        ));
+        let target = Target::new(DestinationHost::Ip(Ipv4Addr::LOCALHOST.into()), 53).unwrap();
+        assert_eq!(
+            authorize(&runtime, &target, TransportProtocol::Tcp),
+            Authorization::Direct
+        );
+        assert_eq!(
+            authorize(&runtime, &target, TransportProtocol::Udp),
+            Authorization::Reject
+        );
     }
 
     #[test]
@@ -176,7 +201,10 @@ mod tests {
             PolicyAction::Route(Endpoint::Direct),
         ));
         let target = Target::new(DestinationHost::Ip(address.ip()), address.port()).unwrap();
-        assert_eq!(authorize(&runtime, &target), Authorization::Direct);
+        assert_eq!(
+            authorize(&runtime, &target, TransportProtocol::Tcp),
+            Authorization::Direct
+        );
         let client = connect_direct(&target).unwrap();
         let (_server, _) = listener.accept().unwrap();
         assert_eq!(client.peer_addr().unwrap(), address);
