@@ -4,9 +4,11 @@ members = [
     "crates/core",
     "crates/platform",
     "crates/compat",
+    "crates/daemon",
 ]
 
 [workspace.package]
+version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"

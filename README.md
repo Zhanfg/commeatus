@@ -1,10 +1,10 @@
 # Commeatus
 
-Commeatus is a new-generation proxy core for Android (Root-first) and Linux, written in Rust.
+Commeatus is a Rust proxy core and runtime built around a flow-centric policy model. Android Root is the first-priority platform, with Linux kept as a portable development and deployment target.
 
 The name comes from Latin *commeatus*: passage, free movement, traffic, and a route through which movement can occur.
 
-> **Status:** early architecture / V0.1 core-model stage. Not production-ready. No production proxy protocols are implemented yet.
+> **Status:** `0.1.0-alpha.1` release candidate. The current build is experimental and not production-ready, but it is a functioning TCP proxy rather than an architecture-only skeleton.
 
 ## Project priorities
 
@@ -18,61 +18,161 @@ In order of precedence:
 6. Compatibility
 7. Feature coverage
 
-A feature must not weaken the higher-priority properties above.
+A feature must not weaken a higher-priority property without an explicit architecture decision.
 
-## Design goals
+## What works in 0.1.0-alpha.1
 
-Planned goals include:
+The first runnable slice includes:
 
-- flow-centric runtime and typed internal IR
-- Rust safe-first implementation
-- Android Root-first integration with Linux portability
-- modern eBPF / BTF / CO-RE fast paths where supported
-- TProxy / TUN compatibility fallbacks
-- TCP / UDP / QUIC support
-- policy-based routing, allow/deny lists and ad blocking
-- independent DNS policy and resolver subsystem
-- long-term adaptive routing based primarily on real traffic telemetry
-- low-power, event-driven background behavior
-- protocol and transport extensibility without a monolithic configuration model
-- compatibility importers for mihomo, sing-box and Clash ecosystems without making those formats the native runtime model
+- `commeatus` executable for Linux and Android arm64 builds
+- SOCKS5 no-auth TCP `CONNECT`
+- HTTP/1.x `CONNECT`
+- IPv4 and IPv6 destination handling
+- domain destinations resolved by the operating system resolver for `DIRECT`
+- `DIRECT` and `REJECT` policy actions
+- exact domain, domain suffix, exact IP, CIDR and destination-port rules
+- flow-centric `FlowContext → PolicyEngine → ExecutionPlan` core
+- fixed authority ordering: `UserHard > Safety > Compatibility > Adaptive > Default`
+- transactional parse/validate/compile configuration snapshots
+- configuration, listener and rule-count resource limits
+- 10-second outbound TCP connect deadline after address resolution
+- bounded resolved-address candidates
+- 10-second inbound handshake timeout
+- 256 active-session cap before handler threads are created
+- transactional listener startup: every configured socket must bind before service starts
+- per-connection failure isolation
+- loopback-by-default safety for unauthenticated listeners
+- `check`, `run` and `version` CLI commands
+- zero third-party Rust runtime dependencies in this alpha
 
-## Current implementation
-
-The first V0.1 vertical slice is under active development:
+The execution path is:
 
 ```text
-FlowContext
-    ↓
-Matcher
-    ↓
-PolicyEngine
-    ↓
-PolicyDecision
-    ↓
-ExecutionPlan
+SOCKS5 / HTTP CONNECT
+        ↓
+   canonical Target
+        ↓
+    FlowContext
+        ↓
+   PolicyEngine
+        ↓
+  ExecutionPlan
+        ↓
+ DIRECT or REJECT
+        ↓
+ TCP relay
 ```
 
-Implemented in the current V0.1 work:
+## Quick start
 
-- canonical flow/source/destination/network/transport types
-- typed policy matchers for UID, package, domain, IP, port, TCP/UDP and network kind
-- composed `All`, `AnyOf` and `Not` matchers
-- fixed policy authority: `UserHard > Safety > Compatibility > Adaptive > Default`
-- native separation between actions and endpoints
-- `Direct` endpoint and typed `Reject` action
-- deterministic plan generation
-- unit tests for key policy invariants
+Build the daemon:
 
-This is a core-model implementation, not yet a functioning network proxy.
+```bash
+cargo build --release --locked -p commeatus
+```
 
-See `docs/architecture/v0.1-flow-policy-runtime.md`.
+Validate the example configuration:
 
-## Not implemented yet
+```bash
+./target/release/commeatus check --config examples/commeatus.conf
+```
 
-The repository intentionally does **not** yet implement SOCKS5, HTTP proxy, VLESS, VMess, Trojan, Shadowsocks, Hysteria, TUIC, WireGuard, TUN, TProxy, eBPF programs, DNS resolvers, Fake-IP, ad-blocking engines, smart routing, Clash API or subscription parsers.
+Run it:
 
-Architecture comes before protocol count.
+```bash
+./target/release/commeatus run --config examples/commeatus.conf
+```
+
+The example listens only on loopback:
+
+```text
+SOCKS5: 127.0.0.1:1080
+HTTP CONNECT: 127.0.0.1:8080
+```
+
+Use those addresses as the SOCKS5 or HTTP proxy in a local client.
+
+## Native alpha configuration
+
+The bootstrap native syntax is deliberately small:
+
+```text
+version 1
+
+listen socks5 127.0.0.1:1080
+listen http 127.0.0.1:8080
+
+default direct
+
+rule reject domain-suffix ads.example
+rule reject domain-exact blocked.example
+rule reject ip 203.0.113.8
+rule reject cidr 10.0.0.0/8
+rule reject port 25
+```
+
+`#` begins a comment. The native syntax is not stable API before 1.0.
+
+### Public-listen safety
+
+SOCKS5 and HTTP CONNECT authentication are **not implemented in this alpha**. Commeatus therefore rejects non-loopback listener addresses by default.
+
+To deliberately expose an unauthenticated listener, the configuration must contain:
+
+```text
+allow-public-listen true
+```
+
+Do not enable this on an untrusted network unless another trusted access-control layer protects the listener.
+
+## Policy semantics worth knowing
+
+- `Reject` is an action, not an outbound endpoint.
+- `Direct` is an endpoint selected by a route action.
+- User hard policy outranks safety-compatible lower authority, compatibility rules, adaptive decisions and defaults.
+- Domain identity is preserved as a domain through policy evaluation.
+- A CIDR rule currently matches only a flow whose canonical destination was already an IP address. It does **not** retroactively match IPs obtained later by system DNS for a domain destination.
+
+That last behavior is intentional for now: DNS resolution state is not allowed to silently replace canonical destination identity.
+
+## Current limitations
+
+`0.1.0-alpha.1` deliberately does not include:
+
+- SOCKS5 username/password authentication
+- HTTP proxy authentication
+- UDP forwarding
+- SOCKS5 `UDP ASSOCIATE`
+- ordinary forward-HTTP requests; HTTP inbound is CONNECT-only
+- TUN or TProxy interception
+- eBPF/BTF/CO-RE fast paths
+- Android Root integration/module packaging
+- native proxy outbounds such as Shadowsocks, VLESS, Trojan, Hysteria2 or TUIC
+- DoH/DoT/DoQ or Fake-IP
+- ad-block rule providers
+- Clash/mihomo/sing-box configuration import
+- adaptive/Smart routing
+- live process-level hot reload
+- a final low-power event-driven executor
+
+The current executor uses blocking `std` sockets and bounded thread-per-session handling. It exists to establish a small, auditable, end-to-end-correct execution backend. It is not the final Android power/performance architecture.
+
+System DNS resolution itself is currently synchronous and can still be subject to operating-system resolver delays even though outbound TCP connects are deadline-bounded afterward.
+
+## Verification
+
+GitHub Actions on Ubuntu validates:
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- release build
+- CLI smoke tests
+- explicit Rust 1.85 MSRV check
+- Android `aarch64-linux-android` release cross-build with the Android NDK
+
+The test suite includes real loopback TCP end-to-end tests. It starts an echo server and verifies bytes passing through both SOCKS5 and HTTP CONNECT, policy rejection before outbound connect, and listener survival after a malformed client.
 
 ## Repository layout
 
@@ -80,15 +180,14 @@ Architecture comes before protocol count.
 .
 ├── Cargo.toml
 ├── crates/
-│   ├── core/       # native Flow / Policy / Routing runtime
+│   ├── core/       # Flow / Policy / ExecutionPlan runtime core
+│   ├── daemon/     # runnable TCP proxy and native alpha config
 │   ├── platform/   # Linux / Android platform boundary
 │   └── compat/     # ecosystem compatibility boundary
-├── ebpf/           # eBPF / BTF / CO-RE programs (planned)
+├── ebpf/           # eBPF / BTF / CO-RE work (planned)
+├── examples/
 ├── docs/
-│   ├── architecture/
-│   └── adr/
-├── tests/
-└── scripts/
+└── tests/
 ```
 
 ## Architecture invariants
@@ -98,17 +197,23 @@ Architecture comes before protocol count.
 - Actions, endpoints, transports, resolvers and policies remain distinct concepts.
 - One state has one authoritative owner.
 - Failures should remain local; a single flow or subsystem failure must not imply global network failure.
-- Configuration changes are expected to become transactional, validated and rollback-capable.
-- Direct traffic should avoid unnecessary userspace traversal when the platform supports it.
+- Configuration candidates are validated before replacing active state.
+- Direct traffic should avoid unnecessary userspace traversal when the future platform backend supports it.
 - User hard policy and safety constraints outrank adaptive decisions.
 
 Accepted architecture decisions live in `docs/adr/`.
 
-## Public project policy
+## Roadmap after the first alpha
 
-Before a release is considered usable, the project will require reproducible builds, dependency and license auditing, fuzzing of network-facing parsers, regression tests, stability tests and measured power/performance baselines.
+The next major slices are expected to cover:
 
-The public-release checklist is maintained in `docs/public-release.md`.
+1. endpoint capability registry and native proxy outbounds
+2. UDP and QUIC-oriented execution paths
+3. DNS subsystem separation and secure resolvers
+4. Android Root interception with eBPF/TPROXY/TUN capability fallback
+5. rule-provider/ad-block compilation
+6. adaptive routing and real-traffic telemetry
+7. power/performance baselines against mihomo and sing-box
 
 ## Security
 
@@ -116,7 +221,7 @@ Do not report vulnerabilities with exploit details in public issues. See `SECURI
 
 ## Contributing
 
-The project is still in early architecture development. Read `CONTRIBUTING.md` before proposing large changes.
+Read `CONTRIBUTING.md` and the ADRs before proposing architecture-level changes.
 
 ## License
 

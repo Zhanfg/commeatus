@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 
 use crate::{
+    cidr::IpCidr,
     flow::{DestinationHost, FlowContext, NetworkKind, TransportProtocol},
     plan::{Endpoint, RejectReason},
 };
@@ -51,6 +52,7 @@ pub enum Matcher {
     DomainExact(String),
     DomainSuffix(String),
     Ip(IpAddr),
+    Cidr(IpCidr),
     Port(u16),
     Transport(TransportProtocol),
     Network(NetworkKind),
@@ -80,6 +82,10 @@ impl Matcher {
             },
             Self::Ip(expected) => match &flow.destination.host {
                 DestinationHost::Ip(actual) => actual == expected,
+                DestinationHost::Domain(_) => false,
+            },
+            Self::Cidr(cidr) => match &flow.destination.host {
+                DestinationHost::Ip(actual) => cidr.contains(*actual),
                 DestinationHost::Domain(_) => false,
             },
             Self::Port(port) => flow.destination.port == *port,
@@ -199,6 +205,19 @@ mod tests {
         )
     }
 
+    fn ip_flow(address: IpAddr) -> FlowContext {
+        FlowContext::new(
+            FlowId::new(2),
+            SourceContext::default(),
+            Destination {
+                host: DestinationHost::Ip(address),
+                port: 443,
+            },
+            TransportProtocol::Tcp,
+            NetworkContext::default(),
+        )
+    }
+
     #[test]
     fn suffix_matching_respects_label_boundaries() {
         let matcher = Matcher::DomainSuffix("example.com".to_owned());
@@ -261,5 +280,13 @@ mod tests {
     fn ip_match_does_not_match_domain_identity() {
         let matcher = Matcher::Ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)));
         assert!(!matcher.matches(&domain_flow("one.one.one.one", 1)));
+    }
+
+    #[test]
+    fn cidr_matches_only_ip_destination_identity() {
+        let matcher = Matcher::Cidr("10.0.0.0/8".parse().unwrap());
+        assert!(matcher.matches(&ip_flow("10.42.0.1".parse().unwrap())));
+        assert!(!matcher.matches(&ip_flow("11.0.0.1".parse().unwrap())));
+        assert!(!matcher.matches(&domain_flow("internal.example", 1)));
     }
 }
