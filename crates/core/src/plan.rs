@@ -1,4 +1,7 @@
-use crate::{flow::FlowId, policy::{PolicyTier, RuleId}};
+use crate::{
+    flow::FlowId,
+    policy::{PolicyTier, RuleId},
+};
 
 /// A concrete egress target. Actions are deliberately not represented here.
 #[derive(Clone, Debug, Eq, PartialEq)]
