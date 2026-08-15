@@ -3,13 +3,13 @@
 version = 4
 
 [[package]]
-name = "agent-compat"
+name = "commeatus-compat"
 version = "0.1.0"
 
 [[package]]
-name = "agent-core"
+name = "commeatus-core"
 version = "0.1.0"
 
 [[package]]
-name = "agent-platform"
+name = "commeatus-platform"
 version = "0.1.0"
