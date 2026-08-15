@@ -120,9 +120,7 @@ fn http_connect_relays_buffered_and_live_bytes_end_to_end() {
     let mut tunnel = TcpStream::connect(proxy_address).unwrap();
     tunnel.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
     tunnel.set_write_timeout(Some(TEST_TIMEOUT)).unwrap();
-    let request = format!(
-        "CONNECT {echo_address} HTTP/1.1\r\nHost: {echo_address}\r\n\r\nearly"
-    );
+    let request = format!("CONNECT {echo_address} HTTP/1.1\r\nHost: {echo_address}\r\n\r\nearly");
     tunnel.write_all(request.as_bytes()).unwrap();
     let response = read_http_head(&mut tunnel).unwrap();
     assert!(response.starts_with(b"HTTP/1.1 200"));
