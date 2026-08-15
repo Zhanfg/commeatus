@@ -11,11 +11,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cidr;
 pub mod flow;
 pub mod plan;
 pub mod policy;
 pub mod runtime;
 
+pub use cidr::{CidrParseError, IpCidr};
 pub use flow::{
     Destination, DestinationHost, FlowContext, FlowId, NetworkContext, NetworkKind, SourceContext,
     TransportProtocol,
