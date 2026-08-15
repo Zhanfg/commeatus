@@ -6,3 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Compatibility boundary for existing proxy ecosystems"
+
+[dependencies]
+commeatus-core = { path = "../core", version = "=0.1.0-alpha.1" }
