@@ -40,5 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Verify MSRV toolchain
+        run: rustc +1.85.0 --version
       - name: Check MSRV
-        run: cargo check --workspace --all-targets --locked
+        run: cargo +1.85.0 check --workspace --all-targets --locked

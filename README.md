@@ -4,7 +4,7 @@ Commeatus is a new-generation proxy core for Android (Root-first) and Linux, wri
 
 The name comes from Latin *commeatus*: passage, free movement, traffic, and a route through which movement can occur.
 
-> **Status:** early architecture / bootstrap stage. Not production-ready. No production proxy protocols are implemented yet.
+> **Status:** early architecture / V0.1 core-model stage. Not production-ready. No production proxy protocols are implemented yet.
 
 ## Project priorities
 
@@ -37,9 +37,40 @@ Planned goals include:
 - protocol and transport extensibility without a monolithic configuration model
 - compatibility importers for mihomo, sing-box and Clash ecosystems without making those formats the native runtime model
 
-## Non-goals for bootstrap
+## Current implementation
 
-The bootstrap repository intentionally does **not** yet implement SOCKS5, HTTP proxy, VLESS, VMess, Trojan, Shadowsocks, Hysteria, TUIC, WireGuard, TUN, TProxy, eBPF programs, DNS resolvers, Fake-IP, ad-blocking engines, smart routing, Clash API or subscription parsers.
+The first V0.1 vertical slice is under active development:
+
+```text
+FlowContext
+    ↓
+Matcher
+    ↓
+PolicyEngine
+    ↓
+PolicyDecision
+    ↓
+ExecutionPlan
+```
+
+Implemented in the current V0.1 work:
+
+- canonical flow/source/destination/network/transport types
+- typed policy matchers for UID, package, domain, IP, port, TCP/UDP and network kind
+- composed `All`, `AnyOf` and `Not` matchers
+- fixed policy authority: `UserHard > Safety > Compatibility > Adaptive > Default`
+- native separation between actions and endpoints
+- `Direct` endpoint and typed `Reject` action
+- deterministic plan generation
+- unit tests for key policy invariants
+
+This is a core-model implementation, not yet a functioning network proxy.
+
+See `docs/architecture/v0.1-flow-policy-runtime.md`.
+
+## Not implemented yet
+
+The repository intentionally does **not** yet implement SOCKS5, HTTP proxy, VLESS, VMess, Trojan, Shadowsocks, Hysteria, TUIC, WireGuard, TUN, TProxy, eBPF programs, DNS resolvers, Fake-IP, ad-blocking engines, smart routing, Clash API or subscription parsers.
 
 Architecture comes before protocol count.
 
@@ -71,7 +102,7 @@ Architecture comes before protocol count.
 - Direct traffic should avoid unnecessary userspace traversal when the platform supports it.
 - User hard policy and safety constraints outrank adaptive decisions.
 
-See `docs/adr/0001-flow-centric-architecture.md` for the first accepted architecture decision.
+Accepted architecture decisions live in `docs/adr/`.
 
 ## Public project policy
 
@@ -85,7 +116,7 @@ Do not report vulnerabilities with exploit details in public issues. See `SECURI
 
 ## Contributing
 
-The project is still in architecture bootstrap. Read `CONTRIBUTING.md` before proposing large changes.
+The project is still in early architecture development. Read `CONTRIBUTING.md` before proposing large changes.
 
 ## License
 
