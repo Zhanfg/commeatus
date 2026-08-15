@@ -103,7 +103,8 @@ impl HostsTable {
                         format!("hosts entry count exceeds {MAX_HOSTS_ENTRIES}"),
                     ));
                 }
-                let name = normalize_name(name)?;
+                let name = normalize_name(name)
+                    .map_err(|_| hosts_error(line_number, "invalid hostname"))?;
                 let addresses = table.records.entry(name).or_default();
                 if !addresses.contains(&address) {
                     addresses.push(address);
@@ -256,6 +257,14 @@ struct DnsCache {
 }
 
 impl DnsCache {
+    fn defaults() -> Self {
+        Self {
+            entries: HashMap::new(),
+            capacity: DEFAULT_CACHE_CAPACITY,
+            ttl: DEFAULT_CACHE_TTL,
+        }
+    }
+
     fn new(capacity: usize, ttl: Duration) -> Result<Self, DnsError> {
         if capacity == 0 || ttl.is_zero() || ttl > MAX_CACHE_TTL {
             return Err(DnsError::new(
@@ -324,14 +333,14 @@ impl fmt::Debug for DnsEngine {
 }
 
 impl DnsEngine {
+    #[must_use]
     pub fn system(hosts: HostsTable) -> Self {
-        Self::with_resolvers(
+        Self {
             hosts,
-            vec![Arc::new(SystemResolver)],
-            DEFAULT_CACHE_CAPACITY,
-            DEFAULT_CACHE_TTL,
-        )
-        .expect("default DNS cache configuration is valid")
+            cache: Mutex::new(DnsCache::defaults()),
+            resolvers: vec![Arc::new(SystemResolver)],
+            stats: AtomicDnsStats::default(),
+        }
     }
 
     pub fn with_resolvers(
@@ -391,9 +400,7 @@ impl DnsEngine {
                     ));
                 }
                 Err(error) => {
-                    self.stats
-                        .resolver_failures
-                        .fetch_add(1, Ordering::Relaxed);
+                    self.stats.resolver_failures.fetch_add(1, Ordering::Relaxed);
                     last_error = Some(error);
                 }
             }
@@ -472,13 +479,9 @@ mod tests {
     fn hosts_override_resolves_before_network_resolver() {
         let hosts = HostsTable::parse("203.0.113.9 service.example\n").unwrap();
         let resolver = Arc::new(StaticResolver::failure());
-        let engine = DnsEngine::with_resolvers(
-            hosts,
-            vec![resolver.clone()],
-            16,
-            Duration::from_secs(60),
-        )
-        .unwrap();
+        let engine =
+            DnsEngine::with_resolvers(hosts, vec![resolver.clone()], 16, Duration::from_secs(60))
+                .unwrap();
         assert_eq!(
             engine.resolve("SERVICE.EXAMPLE.").unwrap(),
             vec!["203.0.113.9".parse::<IpAddr>().unwrap()]
@@ -525,15 +528,20 @@ mod tests {
 
     #[test]
     fn hosts_parser_accepts_multiple_names_and_addresses() {
-        let mut hosts = HostsTable::parse(
-            "127.0.0.1 localhost local.test\n::1 localhost local.test\n",
-        )
-        .unwrap();
+        let mut hosts =
+            HostsTable::parse("127.0.0.1 localhost local.test\n::1 localhost local.test\n")
+                .unwrap();
         let extra = HostsTable::parse("192.0.2.1 other.test\n").unwrap();
         hosts.merge(extra);
         assert_eq!(hosts.resolve("localhost").unwrap().len(), 2);
         assert_eq!(hosts.resolve("local.test").unwrap().len(), 2);
         assert_eq!(hosts.resolve("other.test").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn invalid_hosts_name_is_classified_as_hosts_parse() {
+        let error = HostsTable::parse("127.0.0.1 bad..name\n").unwrap_err();
+        assert_eq!(error.kind(), DnsErrorKind::HostsParse);
     }
 
     #[test]
