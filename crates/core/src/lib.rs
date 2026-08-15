@@ -17,8 +17,8 @@ pub mod policy;
 pub mod runtime;
 
 pub use flow::{
-    Destination, DestinationHost, FlowContext, FlowId, NetworkContext, NetworkKind,
-    SourceContext, TransportProtocol,
+    Destination, DestinationHost, FlowContext, FlowId, NetworkContext, NetworkKind, SourceContext,
+    TransportProtocol,
 };
 pub use plan::{Endpoint, ExecutionAction, ExecutionPlan, RejectReason};
 pub use policy::{
