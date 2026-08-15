@@ -72,7 +72,7 @@ pub struct FlowContext {
 
 impl FlowContext {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         id: FlowId,
         source: SourceContext,
         destination: Destination,
