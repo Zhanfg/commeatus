@@ -1,6 +1,6 @@
 use std::{
     io::{self, Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
     sync::Arc,
     thread,
     time::Duration,
@@ -42,18 +42,67 @@ fn spawn_echo_server() -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<
     Ok((address, handle))
 }
 
-fn connect_socks5(proxy: SocketAddr, target: SocketAddr) -> io::Result<(TcpStream, u8)> {
+fn spawn_udp_echo_server() -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<()>>)> {
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+    socket.set_read_timeout(Some(TEST_TIMEOUT))?;
+    socket.set_write_timeout(Some(TEST_TIMEOUT))?;
+    let address = socket.local_addr()?;
+    let handle = thread::spawn(move || {
+        let mut buffer = [0_u8; 4096];
+        let (length, peer) = socket.recv_from(&mut buffer)?;
+        socket.send_to(&buffer[..length], peer)?;
+        Ok(())
+    });
+    Ok((address, handle))
+}
+
+fn negotiate_socks5(proxy: SocketAddr) -> io::Result<TcpStream> {
     let mut stream = TcpStream::connect(proxy)?;
     stream.set_read_timeout(Some(TEST_TIMEOUT))?;
     stream.set_write_timeout(Some(TEST_TIMEOUT))?;
-
     stream.write_all(&[0x05, 0x01, 0x00])?;
     let mut method = [0_u8; 2];
     stream.read_exact(&mut method)?;
     if method != [0x05, 0x00] {
         return Err(io::Error::other("unexpected SOCKS5 method reply"));
     }
+    Ok(stream)
+}
 
+fn read_socks5_reply(stream: &mut TcpStream) -> io::Result<(u8, SocketAddr)> {
+    let mut head = [0_u8; 4];
+    stream.read_exact(&mut head)?;
+    let reply_code = head[1];
+    let address = match head[3] {
+        0x01 => {
+            let mut tail = [0_u8; 6];
+            stream.read_exact(&mut tail)?;
+            SocketAddr::from((
+                Ipv4Addr::new(tail[0], tail[1], tail[2], tail[3]),
+                u16::from_be_bytes([tail[4], tail[5]]),
+            ))
+        }
+        0x04 => {
+            let mut tail = [0_u8; 18];
+            stream.read_exact(&mut tail)?;
+            let mut address = [0_u8; 16];
+            address.copy_from_slice(&tail[..16]);
+            SocketAddr::new(
+                std::net::Ipv6Addr::from(address).into(),
+                u16::from_be_bytes([tail[16], tail[17]]),
+            )
+        }
+        other => {
+            return Err(io::Error::other(format!(
+                "unexpected SOCKS5 reply address type {other}"
+            )));
+        }
+    };
+    Ok((reply_code, address))
+}
+
+fn connect_socks5(proxy: SocketAddr, target: SocketAddr) -> io::Result<(TcpStream, u8)> {
+    let mut stream = negotiate_socks5(proxy)?;
     let SocketAddr::V4(target) = target else {
         return Err(io::Error::other("test target must be IPv4"));
     };
@@ -62,22 +111,20 @@ fn connect_socks5(proxy: SocketAddr, target: SocketAddr) -> io::Result<(TcpStrea
     request.extend_from_slice(&target.ip().octets());
     request.extend_from_slice(&target.port().to_be_bytes());
     stream.write_all(&request)?;
+    let (reply, _) = read_socks5_reply(&mut stream)?;
+    Ok((stream, reply))
+}
 
-    let mut head = [0_u8; 4];
-    stream.read_exact(&mut head)?;
-    let reply_code = head[1];
-    let address_bytes = match head[3] {
-        0x01 => 4,
-        0x04 => 16,
-        other => {
-            return Err(io::Error::other(format!(
-                "unexpected SOCKS5 reply address type {other}"
-            )));
-        }
-    };
-    let mut tail = vec![0_u8; address_bytes + 2];
-    stream.read_exact(&mut tail)?;
-    Ok((stream, reply_code))
+fn associate_socks5_udp(proxy: SocketAddr) -> io::Result<(TcpStream, SocketAddr)> {
+    let mut stream = negotiate_socks5(proxy)?;
+    stream.write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])?;
+    let (reply, relay) = read_socks5_reply(&mut stream)?;
+    if reply != 0x00 {
+        return Err(io::Error::other(format!(
+            "SOCKS5 UDP ASSOCIATE failed with reply {reply}"
+        )));
+    }
+    Ok((stream, relay))
 }
 
 fn read_http_head(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
@@ -106,6 +153,36 @@ fn socks5_connect_relays_bytes_end_to_end() {
     tunnel.read_exact(&mut echoed).unwrap();
     assert_eq!(&echoed, b"socks-through-commeatus");
     drop(tunnel);
+
+    proxy_thread.join().unwrap().unwrap();
+    echo_thread.join().unwrap().unwrap();
+}
+
+#[test]
+fn socks5_udp_associate_relays_datagram_end_to_end() {
+    let (echo_address, echo_thread) = spawn_udp_echo_server().unwrap();
+    let (proxy_address, proxy_thread) =
+        spawn_test_listener(ListenerProtocol::Socks5, direct_runtime(), 1).unwrap();
+    let (control, relay_address) = associate_socks5_udp(proxy_address).unwrap();
+
+    let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    client.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+    let SocketAddr::V4(echo_address) = echo_address else {
+        panic!("UDP echo target must be IPv4");
+    };
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    packet.extend_from_slice(&echo_address.ip().octets());
+    packet.extend_from_slice(&echo_address.port().to_be_bytes());
+    packet.extend_from_slice(b"udp-through-commeatus");
+    client.send_to(&packet, relay_address).unwrap();
+
+    let mut response = [0_u8; 4096];
+    let (length, source) = client.recv_from(&mut response).unwrap();
+    assert_eq!(source, relay_address);
+    assert_eq!(&response[10..length], b"udp-through-commeatus");
+    drop(client);
+    drop(control);
 
     proxy_thread.join().unwrap().unwrap();
     echo_thread.join().unwrap().unwrap();
