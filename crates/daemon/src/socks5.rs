@@ -402,7 +402,10 @@ mod tests {
         packet.extend_from_slice(&53_u16.to_be_bytes());
         packet.extend_from_slice(b"dns");
         let (target, payload) = parse_udp_request(&packet).unwrap();
-        assert_eq!(target.host, DestinationHost::Domain("example.com".to_owned()));
+        assert_eq!(
+            target.host,
+            DestinationHost::Domain("example.com".to_owned())
+        );
         assert_eq!(target.port, 53);
         assert_eq!(payload, b"dns");
     }
