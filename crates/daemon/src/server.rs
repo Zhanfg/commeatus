@@ -11,7 +11,9 @@ use std::{
 };
 
 use commeatus_core::Runtime;
-use commeatus_dns::{DnsEngine, HostsTable};
+use commeatus_dns::DnsEngine;
+#[cfg(test)]
+use commeatus_dns::HostsTable;
 
 use crate::{
     config::{CompiledConfig, ListenerProtocol},
