@@ -1,0 +1,11 @@
+[package]
+name = "commeatus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Commeatus proxy daemon and command-line interface"
+
+[dependencies]
+commeatus-core = { path = "../core", version = "=0.1.0-alpha.1" }
