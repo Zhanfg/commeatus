@@ -121,6 +121,7 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
 
     let mut version_seen = false;
     let mut default_action = None;
+    let mut allow_public_listen = None;
     let mut listeners = Vec::new();
     let mut listener_addresses = HashSet::new();
     let mut rules = Vec::new();
@@ -142,6 +143,30 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
                     return Err(ConfigError::at(line_number, "duplicate version directive"));
                 }
                 version_seen = true;
+            }
+            Some("allow-public-listen") => {
+                if fields.len() != 2 {
+                    return Err(ConfigError::at(
+                        line_number,
+                        "allow-public-listen syntax is `allow-public-listen <true|false>`",
+                    ));
+                }
+                if allow_public_listen.is_some() {
+                    return Err(ConfigError::at(
+                        line_number,
+                        "duplicate allow-public-listen directive",
+                    ));
+                }
+                allow_public_listen = Some(match fields[1] {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        return Err(ConfigError::at(
+                            line_number,
+                            "allow-public-listen must be `true` or `false`",
+                        ));
+                    }
+                });
             }
             Some("listen") => {
                 if fields.len() != 3 {
@@ -220,6 +245,15 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
     if listeners.is_empty() {
         return Err(ConfigError::global("at least one listener is required"));
     }
+    if !allow_public_listen.unwrap_or(false)
+        && listeners
+            .iter()
+            .any(|listener| !listener.address.ip().is_loopback())
+    {
+        return Err(ConfigError::global(
+            "non-loopback listeners require explicit `allow-public-listen true` because alpha inbounds have no authentication",
+        ));
+    }
     let default_action =
         default_action.ok_or_else(|| ConfigError::global("missing default action"))?;
 
@@ -249,25 +283,21 @@ fn parse_rule(fields: &[&str], line: usize, id: u64) -> Result<PolicyRule, Confi
     let matcher = match fields[2] {
         "any" if fields.len() == 3 => Matcher::Any,
         "domain-exact" if fields.len() == 4 => {
-            let domain = normalize_domain(fields[3], line)?;
-            Matcher::DomainExact(domain)
+            Matcher::DomainExact(normalize_domain(fields[3], line)?)
         }
         "domain-suffix" if fields.len() == 4 => {
-            let domain = normalize_domain(fields[3], line)?;
-            Matcher::DomainSuffix(domain)
+            Matcher::DomainSuffix(normalize_domain(fields[3], line)?)
         }
-        "ip" if fields.len() == 4 => {
-            let address: IpAddr = fields[3]
+        "ip" if fields.len() == 4 => Matcher::Ip(
+            fields[3]
                 .parse()
-                .map_err(|_| ConfigError::at(line, "invalid IP address"))?;
-            Matcher::Ip(address)
-        }
-        "cidr" if fields.len() == 4 => {
-            let cidr: IpCidr = fields[3]
+                .map_err(|_| ConfigError::at(line, "invalid IP address"))?,
+        ),
+        "cidr" if fields.len() == 4 => Matcher::Cidr(
+            fields[3]
                 .parse::<IpCidr>()
-                .map_err(|error| ConfigError::at(line, error.to_string()))?;
-            Matcher::Cidr(cidr)
-        }
+                .map_err(|error| ConfigError::at(line, error.to_string()))?,
+        ),
         "port" if fields.len() == 4 => {
             let port: u16 = fields[3]
                 .parse()
@@ -373,6 +403,24 @@ mod tests {
             default direct
         "#;
         assert!(parse_config(config).is_err());
+    }
+
+    #[test]
+    fn public_listener_requires_explicit_opt_in() {
+        let unsafe_default = r#"
+            version 1
+            listen socks5 0.0.0.0:1080
+            default direct
+        "#;
+        assert!(parse_config(unsafe_default).is_err());
+
+        let explicit = r#"
+            version 1
+            allow-public-listen true
+            listen socks5 0.0.0.0:1080
+            default direct
+        "#;
+        assert!(parse_config(explicit).is_ok());
     }
 
     #[test]
