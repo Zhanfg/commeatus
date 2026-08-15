@@ -189,13 +189,9 @@ fn socks5_connect_relays_bytes_end_to_end() {
 #[test]
 fn socks5_domain_connect_uses_hosts_override_end_to_end() {
     let (echo_address, echo_thread) = spawn_echo_server().unwrap();
-    let (proxy_address, proxy_thread) = spawn_test_listener_with_dns(
-        ListenerProtocol::Socks5,
-        direct_runtime(),
-        hosts_dns(),
-        1,
-    )
-    .unwrap();
+    let (proxy_address, proxy_thread) =
+        spawn_test_listener_with_dns(ListenerProtocol::Socks5, direct_runtime(), hosts_dns(), 1)
+            .unwrap();
 
     let (mut tunnel, reply) =
         connect_socks5_domain(proxy_address, HOSTS_ONLY_NAME, echo_address.port()).unwrap();
@@ -243,13 +239,9 @@ fn socks5_udp_associate_relays_datagram_end_to_end() {
 #[test]
 fn socks5_udp_domain_uses_hosts_override_end_to_end() {
     let (echo_address, echo_thread) = spawn_udp_echo_server().unwrap();
-    let (proxy_address, proxy_thread) = spawn_test_listener_with_dns(
-        ListenerProtocol::Socks5,
-        direct_runtime(),
-        hosts_dns(),
-        1,
-    )
-    .unwrap();
+    let (proxy_address, proxy_thread) =
+        spawn_test_listener_with_dns(ListenerProtocol::Socks5, direct_runtime(), hosts_dns(), 1)
+            .unwrap();
     let (control, relay_address) = associate_socks5_udp(proxy_address).unwrap();
 
     let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
