@@ -54,7 +54,11 @@ pub enum Authorization {
 }
 
 #[must_use]
-pub fn authorize(runtime: &Runtime, target: &Target, transport: TransportProtocol) -> Authorization {
+pub fn authorize(
+    runtime: &Runtime,
+    target: &Target,
+    transport: TransportProtocol,
+) -> Authorization {
     match runtime.plan(&target.flow(transport)).action {
         ExecutionAction::Route { .. } => Authorization::Direct,
         ExecutionAction::Reject { .. } => Authorization::Reject,
