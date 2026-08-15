@@ -22,11 +22,7 @@ const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_UDP_PACKET: usize = 65_535;
 const MAX_UDP_REMOTE_PEERS: usize = 256;
 
-pub fn handle(
-    mut client: TcpStream,
-    runtime: Arc<Runtime>,
-    dns: Arc<DnsEngine>,
-) -> io::Result<()> {
+pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>, dns: Arc<DnsEngine>) -> io::Result<()> {
     client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
