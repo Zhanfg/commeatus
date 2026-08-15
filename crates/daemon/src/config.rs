@@ -264,7 +264,7 @@ fn parse_rule(fields: &[&str], line: usize, id: u64) -> Result<PolicyRule, Confi
         }
         "cidr" if fields.len() == 4 => {
             let cidr: IpCidr = fields[3]
-                .parse()
+                .parse::<IpCidr>()
                 .map_err(|error| ConfigError::at(line, error.to_string()))?;
             Matcher::Cidr(cidr)
         }
