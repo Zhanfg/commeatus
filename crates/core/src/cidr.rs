@@ -49,15 +49,11 @@ impl FromStr for IpCidr {
     type Err = CidrParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (address, prefix) = value
-            .split_once('/')
-            .ok_or(CidrParseError::MissingPrefix)?;
+        let (address, prefix) = value.split_once('/').ok_or(CidrParseError::MissingPrefix)?;
         let address: IpAddr = address
             .parse()
             .map_err(|_| CidrParseError::InvalidAddress)?;
-        let prefix: u8 = prefix
-            .parse()
-            .map_err(|_| CidrParseError::InvalidPrefix)?;
+        let prefix: u8 = prefix.parse().map_err(|_| CidrParseError::InvalidPrefix)?;
 
         match address {
             IpAddr::V4(address) if prefix <= 32 => {
