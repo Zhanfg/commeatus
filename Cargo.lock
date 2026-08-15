@@ -8,6 +8,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "commeatus-compat",
  "commeatus-core",
+ "commeatus-dns",
  "commeatus-platform",
 ]
 
@@ -20,6 +21,10 @@ dependencies = [
 
 [[package]]
 name = "commeatus-core"
+version = "0.1.0-alpha.1"
+
+[[package]]
+name = "commeatus-dns"
 version = "0.1.0-alpha.1"
 
 [[package]]
