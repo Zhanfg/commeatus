@@ -1,6 +1,6 @@
 use std::{
     io,
-    net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
+    net::{Shutdown, SocketAddr, TcpStream},
     sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
@@ -10,10 +10,10 @@ use commeatus_core::{
     Destination, DestinationHost, ExecutionAction, FlowContext, FlowId, NetworkContext, Runtime,
     SourceContext, TransportProtocol,
 };
+use commeatus_dns::DnsEngine;
 
 static NEXT_FLOW_ID: AtomicU64 = AtomicU64::new(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_RESOLVED_ADDRESSES: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Target {
@@ -65,8 +65,8 @@ pub fn authorize(
     }
 }
 
-pub fn connect_direct(target: &Target) -> io::Result<TcpStream> {
-    let addresses = resolve_target(target)?;
+pub fn connect_direct(target: &Target, dns: &DnsEngine) -> io::Result<TcpStream> {
+    let addresses = resolve_target(target, dns)?;
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     let mut last_error = None;
 
@@ -92,15 +92,16 @@ pub fn connect_direct(target: &Target) -> io::Result<TcpStream> {
     }))
 }
 
-pub(crate) fn resolve_target(target: &Target) -> io::Result<Vec<SocketAddr>> {
-    let mut addresses = match &target.host {
-        DestinationHost::Domain(domain) => (domain.as_str(), target.port)
-            .to_socket_addrs()?
-            .take(MAX_RESOLVED_ADDRESSES)
+pub(crate) fn resolve_target(target: &Target, dns: &DnsEngine) -> io::Result<Vec<SocketAddr>> {
+    let addresses = match &target.host {
+        DestinationHost::Domain(domain) => dns
+            .resolve(domain)
+            .map_err(|error| io::Error::new(io::ErrorKind::AddrNotAvailable, error.to_string()))?
+            .into_iter()
+            .map(|address| SocketAddr::new(address, target.port))
             .collect::<Vec<_>>(),
         DestinationHost::Ip(address) => vec![SocketAddr::new(*address, target.port)],
     };
-    addresses.dedup();
     if addresses.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -158,8 +159,13 @@ mod tests {
     use std::net::{Ipv4Addr, TcpListener};
 
     use commeatus_core::{Endpoint, PolicyAction, PolicyEngine};
+    use commeatus_dns::HostsTable;
 
     use super::*;
+
+    fn dns() -> DnsEngine {
+        DnsEngine::system(HostsTable::default())
+    }
 
     #[test]
     fn policy_rejection_is_preserved_before_connect() {
@@ -209,7 +215,7 @@ mod tests {
             authorize(&runtime, &target, TransportProtocol::Tcp),
             Authorization::Direct
         );
-        let client = connect_direct(&target).unwrap();
+        let client = connect_direct(&target, &dns()).unwrap();
         let (_server, _) = listener.accept().unwrap();
         assert_eq!(client.peer_addr().unwrap(), address);
     }
@@ -217,9 +223,9 @@ mod tests {
     #[test]
     fn resolver_deduplicates_and_bounds_addresses() {
         let target = Target::new(DestinationHost::Domain("localhost".to_owned()), 80).unwrap();
-        let addresses = resolve_target(&target).unwrap();
+        let addresses = resolve_target(&target, &dns()).unwrap();
         assert!(!addresses.is_empty());
-        assert!(addresses.len() <= MAX_RESOLVED_ADDRESSES);
+        assert!(addresses.len() <= commeatus_dns::MAX_RESOLVED_ADDRESSES);
         let mut unique = addresses.clone();
         unique.sort_unstable();
         unique.dedup();

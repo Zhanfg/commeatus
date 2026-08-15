@@ -11,6 +11,9 @@ use std::{
 };
 
 use commeatus_core::Runtime;
+use commeatus_dns::DnsEngine;
+#[cfg(test)]
+use commeatus_dns::HostsTable;
 
 use crate::{
     config::{CompiledConfig, ListenerProtocol},
@@ -75,6 +78,7 @@ impl Drop for ConnectionPermit {
 pub struct Server {
     listeners: Vec<BoundListener>,
     runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
     limiter: Arc<ConnectionLimiter>,
 }
 
@@ -95,6 +99,7 @@ impl Server {
         Ok(Self {
             listeners,
             runtime: Arc::new(config.runtime().clone()),
+            dns: Arc::clone(config.dns()),
             limiter: Arc::new(ConnectionLimiter::new(MAX_ACTIVE_CONNECTIONS)),
         })
     }
@@ -104,13 +109,15 @@ impl Server {
 
         for bound in self.listeners {
             let runtime = Arc::clone(&self.runtime);
+            let dns = Arc::clone(&self.dns);
             let limiter = Arc::clone(&self.limiter);
             let tx = exit_tx.clone();
             let address = bound.listener.local_addr()?;
             thread::Builder::new()
                 .name(format!("commeatus-listener-{address}"))
                 .spawn(move || {
-                    let result = serve_forever(bound.listener, bound.protocol, runtime, limiter);
+                    let result =
+                        serve_forever(bound.listener, bound.protocol, runtime, dns, limiter);
                     let _ = tx.send((address, result));
                 })?;
         }
@@ -133,6 +140,7 @@ fn serve_forever(
     listener: TcpListener,
     protocol: ListenerProtocol,
     runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
     limiter: Arc<ConnectionLimiter>,
 ) -> io::Result<()> {
     let mut consecutive_errors = 0_usize;
@@ -145,6 +153,7 @@ fn serve_forever(
                     peer,
                     protocol,
                     Arc::clone(&runtime),
+                    Arc::clone(&dns),
                     Arc::clone(&limiter),
                 );
             }
@@ -168,6 +177,7 @@ fn spawn_connection(
     peer: SocketAddr,
     protocol: ListenerProtocol,
     runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
     limiter: Arc<ConnectionLimiter>,
 ) {
     let Some(permit) = limiter.try_acquire() else {
@@ -182,7 +192,7 @@ fn spawn_connection(
         .name("commeatus-session".to_owned())
         .spawn(move || {
             let _permit = permit;
-            if let Err(error) = handle_connection(stream, protocol, runtime) {
+            if let Err(error) = handle_connection(stream, protocol, runtime, dns) {
                 eprintln!("commeatus: connection from {peer} ended with error: {error}");
             }
         })
@@ -197,10 +207,11 @@ fn handle_connection(
     stream: TcpStream,
     protocol: ListenerProtocol,
     runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
 ) -> io::Result<()> {
     match protocol {
-        ListenerProtocol::Socks5 => socks5::handle(stream, runtime),
-        ListenerProtocol::HttpConnect => http_connect::handle(stream, runtime),
+        ListenerProtocol::Socks5 => socks5::handle(stream, runtime, dns),
+        ListenerProtocol::HttpConnect => http_connect::handle(stream, runtime, dns),
     }
 }
 
@@ -210,11 +221,26 @@ pub(crate) fn spawn_test_listener(
     runtime: Arc<Runtime>,
     connection_count: usize,
 ) -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<()>>)> {
+    spawn_test_listener_with_dns(
+        protocol,
+        runtime,
+        Arc::new(DnsEngine::system(HostsTable::default())),
+        connection_count,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn spawn_test_listener_with_dns(
+    protocol: ListenerProtocol,
+    runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
+    connection_count: usize,
+) -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<()>>)> {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     let address = listener.local_addr()?;
     let handle = thread::Builder::new()
         .name("commeatus-test-listener".to_owned())
-        .spawn(move || serve_n(listener, protocol, runtime, connection_count))?;
+        .spawn(move || serve_n(listener, protocol, runtime, dns, connection_count))?;
     Ok((address, handle))
 }
 
@@ -223,16 +249,18 @@ fn serve_n(
     listener: TcpListener,
     protocol: ListenerProtocol,
     runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
     connection_count: usize,
 ) -> io::Result<()> {
     let mut connections = Vec::with_capacity(connection_count);
     for _ in 0..connection_count {
         let (stream, _) = listener.accept()?;
         let runtime = Arc::clone(&runtime);
+        let dns = Arc::clone(&dns);
         connections.push(
             thread::Builder::new()
                 .name("commeatus-test-session".to_owned())
-                .spawn(move || handle_connection(stream, protocol, runtime))?,
+                .spawn(move || handle_connection(stream, protocol, runtime, dns))?,
         );
     }
 

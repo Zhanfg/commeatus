@@ -33,11 +33,14 @@ fn run_cli() -> Result<(), String> {
                 .iter()
                 .map(|list| list.stats.accepted_block + list.stats.accepted_allow)
                 .sum();
+            let hosts_records: usize = compiled.hosts().iter().map(|hosts| hosts.records).sum();
             println!(
-                "configuration valid: {} listener(s), {} blocklist(s), {} compiled blocklist entry/entries",
+                "configuration valid: {} listener(s), {} blocklist(s), {} compiled blocklist entry/entries, {} hosts file(s), {} hosts record name(s)",
                 compiled.listeners().len(),
                 compiled.blocklists().len(),
-                block_entries
+                block_entries,
+                compiled.hosts().len(),
+                hosts_records
             );
             Ok(())
         }
@@ -53,6 +56,13 @@ fn run_cli() -> Result<(), String> {
                     blocklist.stats.accepted_block,
                     blocklist.stats.accepted_allow,
                     blocklist.stats.ignored
+                );
+            }
+            for hosts in compiled.hosts() {
+                eprintln!(
+                    "commeatus: DNS hosts {} compiled: {} record name(s)",
+                    hosts.path.display(),
+                    hosts.records
                 );
             }
             for listener in compiled.listeners() {

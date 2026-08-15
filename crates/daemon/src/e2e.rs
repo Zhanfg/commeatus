@@ -10,16 +10,26 @@ use commeatus_core::{
     Endpoint, Matcher, PolicyAction, PolicyEngine, PolicyRule, PolicyTier, RejectReason, RuleId,
     Runtime,
 };
+use commeatus_dns::{DnsEngine, HostsTable};
 
-use crate::{config::ListenerProtocol, server::spawn_test_listener};
+use crate::{
+    config::ListenerProtocol,
+    server::{spawn_test_listener, spawn_test_listener_with_dns},
+};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const HOSTS_ONLY_NAME: &str = "commeatus-dns.test";
 
 fn direct_runtime() -> Arc<Runtime> {
     Arc::new(Runtime::new(PolicyEngine::new(
         Vec::new(),
         PolicyAction::Route(Endpoint::Direct),
     )))
+}
+
+fn hosts_dns() -> Arc<DnsEngine> {
+    let hosts = HostsTable::parse(&format!("127.0.0.1 {HOSTS_ONLY_NAME}\n")).unwrap();
+    Arc::new(DnsEngine::system(hosts))
 }
 
 fn spawn_echo_server() -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<()>>)> {
@@ -115,6 +125,24 @@ fn connect_socks5(proxy: SocketAddr, target: SocketAddr) -> io::Result<(TcpStrea
     Ok((stream, reply))
 }
 
+fn connect_socks5_domain(
+    proxy: SocketAddr,
+    domain: &str,
+    port: u16,
+) -> io::Result<(TcpStream, u8)> {
+    if domain.is_empty() || domain.len() > u8::MAX as usize {
+        return Err(io::Error::other("test domain length is invalid"));
+    }
+    let mut stream = negotiate_socks5(proxy)?;
+    let mut request = Vec::with_capacity(7 + domain.len());
+    request.extend_from_slice(&[0x05, 0x01, 0x00, 0x03, domain.len() as u8]);
+    request.extend_from_slice(domain.as_bytes());
+    request.extend_from_slice(&port.to_be_bytes());
+    stream.write_all(&request)?;
+    let (reply, _) = read_socks5_reply(&mut stream)?;
+    Ok((stream, reply))
+}
+
 fn associate_socks5_udp(proxy: SocketAddr) -> io::Result<(TcpStream, SocketAddr)> {
     let mut stream = negotiate_socks5(proxy)?;
     stream.write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])?;
@@ -159,6 +187,26 @@ fn socks5_connect_relays_bytes_end_to_end() {
 }
 
 #[test]
+fn socks5_domain_connect_uses_hosts_override_end_to_end() {
+    let (echo_address, echo_thread) = spawn_echo_server().unwrap();
+    let (proxy_address, proxy_thread) =
+        spawn_test_listener_with_dns(ListenerProtocol::Socks5, direct_runtime(), hosts_dns(), 1)
+            .unwrap();
+
+    let (mut tunnel, reply) =
+        connect_socks5_domain(proxy_address, HOSTS_ONLY_NAME, echo_address.port()).unwrap();
+    assert_eq!(reply, 0x00);
+    tunnel.write_all(b"hosts-through-dns-engine").unwrap();
+    let mut echoed = [0_u8; 24];
+    tunnel.read_exact(&mut echoed).unwrap();
+    assert_eq!(&echoed, b"hosts-through-dns-engine");
+    drop(tunnel);
+
+    proxy_thread.join().unwrap().unwrap();
+    echo_thread.join().unwrap().unwrap();
+}
+
+#[test]
 fn socks5_udp_associate_relays_datagram_end_to_end() {
     let (echo_address, echo_thread) = spawn_udp_echo_server().unwrap();
     let (proxy_address, proxy_thread) =
@@ -181,6 +229,34 @@ fn socks5_udp_associate_relays_datagram_end_to_end() {
     let (length, source) = client.recv_from(&mut response).unwrap();
     assert_eq!(source, relay_address);
     assert_eq!(&response[10..length], b"udp-through-commeatus");
+    drop(client);
+    drop(control);
+
+    proxy_thread.join().unwrap().unwrap();
+    echo_thread.join().unwrap().unwrap();
+}
+
+#[test]
+fn socks5_udp_domain_uses_hosts_override_end_to_end() {
+    let (echo_address, echo_thread) = spawn_udp_echo_server().unwrap();
+    let (proxy_address, proxy_thread) =
+        spawn_test_listener_with_dns(ListenerProtocol::Socks5, direct_runtime(), hosts_dns(), 1)
+            .unwrap();
+    let (control, relay_address) = associate_socks5_udp(proxy_address).unwrap();
+
+    let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    client.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+    let mut packet = Vec::new();
+    packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x03, HOSTS_ONLY_NAME.len() as u8]);
+    packet.extend_from_slice(HOSTS_ONLY_NAME.as_bytes());
+    packet.extend_from_slice(&echo_address.port().to_be_bytes());
+    packet.extend_from_slice(b"udp-hosts-dns-engine");
+    client.send_to(&packet, relay_address).unwrap();
+
+    let mut response = [0_u8; 4096];
+    let (length, source) = client.recv_from(&mut response).unwrap();
+    assert_eq!(source, relay_address);
+    assert_eq!(&response[10..length], b"udp-hosts-dns-engine");
     drop(client);
     drop(control);
 
