@@ -1,8 +1,8 @@
 [package]
 name = "commeatus-platform"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Linux/Android platform layer of the Commeatus proxy engine (bootstrap)"
+description = "Linux/Android platform integration boundary for Commeatus"
