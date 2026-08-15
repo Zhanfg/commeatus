@@ -1,18 +1,29 @@
-# Contributing
+# Contributing to Commeatus
 
-Short and sharp rules for this repository.
+Commeatus is still in architecture bootstrap. Contributions should preserve the project boundaries before expanding feature count.
 
-## Rules
+## Engineering rules
 
 - Do not introduce large dependencies unrelated to the architecture.
 - New modules must document their responsibility boundary.
-- Compatibility hacks must not leak into the core crate.
-- Network input must not use unguarded `unwrap()` / `expect()`.
-- `unsafe` code requires an explicit SAFETY invariant comment.
+- Compatibility hacks must terminate inside the compatibility layer and must not leak into the native core model.
+- Network-facing input must not rely on unguarded `unwrap()` / `expect()`.
+- `unsafe` code is disallowed by default and, when a narrowly scoped platform/FFI exception is introduced, requires a documented SAFETY invariant.
 - Stability and regression fixes take priority over performance gains.
-- Keep `cargo fmt` and `cargo clippy -D warnings` green.
+- Avoid custom cryptographic primitives; use established reviewed implementations.
+- Keep `cargo fmt`, `cargo check`, tests and `cargo clippy -- -D warnings` green.
+- Architecture-changing work should include or update an ADR.
 
-## Process
+## Change process
 
-- Bootstrap stage: coordinate with the architecture docs
-  (`docs/architecture/` and `docs/adr/`) before opening large changes.
+1. Keep changes scoped and reviewable.
+2. Explain the failure domain and compatibility impact of new runtime behavior.
+3. Add regression coverage for bug fixes.
+4. Do not claim performance, power or compatibility improvements without measurements.
+5. Do not commit credentials, tokens, private keys, cookies or other sensitive data.
+
+## Licensing of contributions
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in Commeatus is submitted under the Apache License 2.0, without additional terms or conditions.
+
+See `LICENSE` for the complete license text.
