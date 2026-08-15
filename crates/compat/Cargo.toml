@@ -1,8 +1,8 @@
 [package]
 name = "commeatus-compat"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Ecosystem compatibility boundary of the Commeatus proxy engine (bootstrap)"
+description = "Compatibility boundary for existing proxy ecosystems"
