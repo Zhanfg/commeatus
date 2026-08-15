@@ -49,36 +49,7 @@ jobs:
           cargo build --release --locked -p commeatus --target aarch64-linux-android
           file target/aarch64-linux-android/release/commeatus | grep -q 'ARM aarch64'
       - name: Package release artifacts
-        run: |
-          set -eu
-          version="${GITHUB_REF_NAME#v}"
-          linux_dir="commeatus-$version-linux-x86_64"
-          android_dir="commeatus-$version-android-arm64"
-          mkdir -p "staging/$linux_dir" "staging/$android_dir" dist
-
-          cp target/release/commeatus "staging/$linux_dir/"
-          cp target/aarch64-linux-android/release/commeatus "staging/$android_dir/"
-          for dir in "$linux_dir" "$android_dir"; do
-            cp LICENSE README.md CHANGELOG.md "staging/$dir/"
-            cp examples/commeatus.conf "staging/$dir/"
-          done
-
-          {
-            echo "version=$version"
-            echo "git_sha=$GITHUB_SHA"
-            echo "rustc=$(rustc +stable --version)"
-            echo "runner=$RUNNER_OS/$RUNNER_ARCH"
-          } > "staging/$linux_dir/BUILD-INFO.txt"
-          cp "staging/$linux_dir/BUILD-INFO.txt" "staging/$android_dir/BUILD-INFO.txt"
-          echo "android_ndk=$ANDROID_NDK_LATEST_HOME" >> "staging/$android_dir/BUILD-INFO.txt"
-          echo "android_min_api=29" >> "staging/$android_dir/BUILD-INFO.txt"
-
-          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
-            -C staging -cf - "$linux_dir" | gzip -n > "dist/$linux_dir.tar.gz"
-          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
-            -C staging -cf - "$android_dir" | gzip -n > "dist/$android_dir.tar.gz"
-          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
-          sha256sum -c dist/SHA256SUMS
+        run: bash scripts/package-alpha.sh "${GITHUB_REF_NAME#v}" "$GITHUB_SHA" "$ANDROID_NDK_LATEST_HOME"
       - name: Publish GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
