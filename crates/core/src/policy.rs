@@ -31,13 +31,15 @@ pub enum PolicyTier {
 }
 
 impl PolicyTier {
-    const PRECEDENCE: [Self; 5] = [
-        Self::UserHard,
-        Self::Safety,
-        Self::Compatibility,
-        Self::Adaptive,
-        Self::Default,
-    ];
+    const fn rank(self) -> u8 {
+        match self {
+            Self::UserHard => 0,
+            Self::Safety => 1,
+            Self::Compatibility => 2,
+            Self::Adaptive => 3,
+            Self::Default => 4,
+        }
+    }
 }
 
 /// Typed match expression. Compatibility rule DSLs must compile into this form.
@@ -137,7 +139,7 @@ pub struct PolicyDecision {
     pub action: PolicyAction,
 }
 
-/// Deterministic first-match engine within each authority tier.
+/// Deterministic first-match engine over precedence-compiled rules.
 #[derive(Clone, Debug)]
 pub struct PolicyEngine {
     rules: Vec<PolicyRule>,
@@ -146,7 +148,10 @@ pub struct PolicyEngine {
 
 impl PolicyEngine {
     #[must_use]
-    pub fn new(rules: Vec<PolicyRule>, default_action: PolicyAction) -> Self {
+    pub fn new(mut rules: Vec<PolicyRule>, default_action: PolicyAction) -> Self {
+        // Stable sorting moves authority ordering out of the per-flow hot path
+        // while preserving first-match order inside each tier.
+        rules.sort_by_key(|rule| rule.tier.rank());
         Self {
             rules,
             default_action,
@@ -155,18 +160,12 @@ impl PolicyEngine {
 
     #[must_use]
     pub fn decide(&self, flow: &FlowContext) -> PolicyDecision {
-        for tier in PolicyTier::PRECEDENCE {
-            if let Some(rule) = self
-                .rules
-                .iter()
-                .find(|rule| rule.tier == tier && rule.matcher.matches(flow))
-            {
-                return PolicyDecision {
-                    rule_id: Some(rule.id),
-                    tier,
-                    action: rule.action.clone(),
-                };
-            }
+        if let Some(rule) = self.rules.iter().find(|rule| rule.matcher.matches(flow)) {
+            return PolicyDecision {
+                rule_id: Some(rule.id),
+                tier: rule.tier,
+                action: rule.action.clone(),
+            };
         }
 
         PolicyDecision {
@@ -234,6 +233,30 @@ mod tests {
         assert_eq!(decision.rule_id, Some(RuleId::new(2)));
         assert_eq!(decision.tier, PolicyTier::UserHard);
         assert_eq!(decision.action, PolicyAction::Reject(RejectReason::Policy));
+    }
+
+    #[test]
+    fn first_match_order_is_preserved_within_a_tier() {
+        let engine = PolicyEngine::new(
+            vec![
+                PolicyRule {
+                    id: RuleId::new(10),
+                    tier: PolicyTier::UserHard,
+                    matcher: Matcher::Uid(7),
+                    action: PolicyAction::Reject(RejectReason::Policy),
+                },
+                PolicyRule {
+                    id: RuleId::new(11),
+                    tier: PolicyTier::UserHard,
+                    matcher: Matcher::Any,
+                    action: PolicyAction::Route(Endpoint::Direct),
+                },
+            ],
+            PolicyAction::Route(Endpoint::Direct),
+        );
+
+        let decision = engine.decide(&domain_flow("example.com", 7));
+        assert_eq!(decision.rule_id, Some(RuleId::new(10)));
     }
 
     #[test]
