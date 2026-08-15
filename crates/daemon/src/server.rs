@@ -107,10 +107,12 @@ impl Server {
             let limiter = Arc::clone(&self.limiter);
             let tx = exit_tx.clone();
             let address = bound.listener.local_addr()?;
-            thread::spawn(move || {
-                let result = serve_forever(bound.listener, bound.protocol, runtime, limiter);
-                let _ = tx.send((address, result));
-            });
+            thread::Builder::new()
+                .name(format!("commeatus-listener-{address}"))
+                .spawn(move || {
+                    let result = serve_forever(bound.listener, bound.protocol, runtime, limiter);
+                    let _ = tx.send((address, result));
+                })?;
         }
         drop(exit_tx);
 
@@ -176,12 +178,17 @@ fn spawn_connection(
         return;
     };
 
-    thread::spawn(move || {
-        let _permit = permit;
-        if let Err(error) = handle_connection(stream, protocol, runtime) {
-            eprintln!("commeatus: connection from {peer} ended with error: {error}");
-        }
-    });
+    if let Err(error) = thread::Builder::new()
+        .name("commeatus-session".to_owned())
+        .spawn(move || {
+            let _permit = permit;
+            if let Err(error) = handle_connection(stream, protocol, runtime) {
+                eprintln!("commeatus: connection from {peer} ended with error: {error}");
+            }
+        })
+    {
+        eprintln!("commeatus: connection from {peer} rejected: cannot create handler thread: {error}");
+    }
 }
 
 fn handle_connection(
@@ -203,7 +210,9 @@ pub(crate) fn spawn_test_listener(
 ) -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<()>>)> {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
     let address = listener.local_addr()?;
-    let handle = thread::spawn(move || serve_n(listener, protocol, runtime, connection_count));
+    let handle = thread::Builder::new()
+        .name("commeatus-test-listener".to_owned())
+        .spawn(move || serve_n(listener, protocol, runtime, connection_count))?;
     Ok((address, handle))
 }
 
@@ -218,9 +227,11 @@ fn serve_n(
     for _ in 0..connection_count {
         let (stream, _) = listener.accept()?;
         let runtime = Arc::clone(&runtime);
-        connections.push(thread::spawn(move || {
-            handle_connection(stream, protocol, runtime)
-        }));
+        connections.push(
+            thread::Builder::new()
+                .name("commeatus-test-session".to_owned())
+                .spawn(move || handle_connection(stream, protocol, runtime))?,
+        );
     }
 
     for connection in connections {
