@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Build output
+dist/
+build/
+
+# Freebuff desktop client data
+.freebuff/
