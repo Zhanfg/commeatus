@@ -1,9 +1,10 @@
-name: Release alpha
+name: Publish first alpha
 
 on:
   push:
-    tags:
-      - v0.1.0-alpha.1
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,47 +17,70 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Determine first-alpha release state
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          test -n "$version"
+          tag="v$version"
+          test "$tag" = "v0.1.0-alpha.1"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Commeatus $tag is already published; nothing to do."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        if: steps.release_state.outputs.publish == 'true'
         with:
           toolchain: stable
           components: rustfmt, clippy
           targets: aarch64-linux-android
-      - name: Verify release identity
-        run: |
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
-          test -n "$version"
-          test "$GITHUB_REF_NAME" = "v$version"
-          test "$GITHUB_REF_NAME" = "v0.1.0-alpha.1"
       - name: Verify source before packaging
+        if: steps.release_state.outputs.publish == 'true'
         run: |
           cargo fmt --all -- --check
           cargo check --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
       - name: Build Linux x86_64
+        if: steps.release_state.outputs.publish == 'true'
         run: |
           cargo build --release --locked -p commeatus
           ./target/release/commeatus version
           ./target/release/commeatus check --config examples/commeatus.conf
       - name: Configure Android NDK linker
+        if: steps.release_state.outputs.publish == 'true'
         run: |
           test -n "$ANDROID_NDK_LATEST_HOME"
           linker="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
           test -x "$linker"
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$linker" >> "$GITHUB_ENV"
       - name: Build Android arm64
+        if: steps.release_state.outputs.publish == 'true'
         run: |
           cargo build --release --locked -p commeatus --target aarch64-linux-android
           file target/aarch64-linux-android/release/commeatus | grep -q 'ARM aarch64'
       - name: Package release artifacts
-        run: bash scripts/package-alpha.sh "${GITHUB_REF_NAME#v}" "$GITHUB_SHA" "$ANDROID_NDK_LATEST_HOME"
-      - name: Publish GitHub prerelease
+        if: steps.release_state.outputs.publish == 'true'
+        run: bash scripts/package-alpha.sh "${{ steps.release_state.outputs.version }}" "$GITHUB_SHA" "$ANDROID_NDK_LATEST_HOME"
+      - name: Publish GitHub prerelease and tag exact commit
+        if: steps.release_state.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_state.outputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+          fi
+          gh release create "$RELEASE_TAG" \
             dist/*.tar.gz dist/SHA256SUMS \
-            --verify-tag \
+            --target "$GITHUB_SHA" \
             --prerelease \
-            --title "Commeatus $GITHUB_REF_NAME" \
+            --title "Commeatus $RELEASE_TAG" \
             --notes-file docs/releases/0.1.0-alpha.1.md
