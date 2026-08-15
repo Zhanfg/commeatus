@@ -21,5 +21,7 @@ pub use flow::{
     SourceContext, TransportProtocol,
 };
 pub use plan::{Endpoint, ExecutionAction, ExecutionPlan, RejectReason};
-pub use policy::{Matcher, PolicyAction, PolicyDecision, PolicyEngine, PolicyRule, PolicyTier, RuleId};
+pub use policy::{
+    Matcher, PolicyAction, PolicyDecision, PolicyEngine, PolicyRule, PolicyTier, RuleId,
+};
 pub use runtime::Runtime;
