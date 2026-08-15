@@ -1,4 +1,4 @@
-//! `agent-core`: the native runtime core of the proxy engine.
+//! `commeatus-core`: the native runtime core of Commeatus.
 //!
 //! Future home of the project's internal data model and runtime:
 //! Flow, Policy, Routing, ExecutionPlan, Runtime, DNS, Protocol and

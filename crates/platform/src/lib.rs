@@ -1,4 +1,4 @@
-//! `agent-platform`: platform-specific integration layer.
+//! `commeatus-platform`: platform-specific integration layer for Commeatus.
 //!
 //! Future home of Linux/Android platform support: Root, TProxy, TUN and
 //! eBPF / BTF / CO-RE integration.
