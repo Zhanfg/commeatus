@@ -11,11 +11,13 @@ use commeatus_core::{
     Endpoint, IpCidr, Matcher, PolicyAction, PolicyEngine, PolicyRule, PolicyTier, RejectReason,
     RuleId, Runtime,
 };
+use commeatus_dns::{DnsEngine, HostsTable, MAX_HOSTS_BYTES};
 
 pub const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 pub const MAX_RULES: usize = 4096;
 pub const MAX_LISTENERS: usize = 16;
 pub const MAX_BLOCKLISTS: usize = 8;
+pub const MAX_HOSTS_FILES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ListenerProtocol {
@@ -35,11 +37,19 @@ pub struct BlocklistSummary {
     pub stats: BlocklistStats,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostsSummary {
+    pub path: PathBuf,
+    pub records: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledConfig {
     listeners: Vec<ListenerConfig>,
     blocklists: Vec<BlocklistSummary>,
+    hosts: Vec<HostsSummary>,
     runtime: Runtime,
+    dns: Arc<DnsEngine>,
 }
 
 impl CompiledConfig {
@@ -54,8 +64,18 @@ impl CompiledConfig {
     }
 
     #[must_use]
+    pub fn hosts(&self) -> &[HostsSummary] {
+        &self.hosts
+    }
+
+    #[must_use]
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
+    }
+
+    #[must_use]
+    pub fn dns(&self) -> &Arc<DnsEngine> {
+        &self.dns
     }
 }
 
@@ -95,8 +115,9 @@ impl std::error::Error for ConfigError {}
 
 /// Active configuration holder with transactional replacement semantics.
 ///
-/// Blocklist assets are read and compiled as part of the candidate. Invalid or
-/// oversized assets therefore cannot partially mutate the active runtime.
+/// Blocklist and hosts assets are fully read and compiled as part of a
+/// candidate. Invalid assets therefore cannot partially mutate the active
+/// runtime or DNS engine.
 pub struct ConfigStore {
     active: RwLock<Arc<CompiledConfig>>,
     asset_root: PathBuf,
@@ -151,6 +172,9 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
     let mut listener_addresses = HashSet::new();
     let mut blocklists = Vec::new();
     let mut blocklist_paths = HashSet::new();
+    let mut hosts = Vec::new();
+    let mut hosts_paths = HashSet::new();
+    let mut hosts_table = HostsTable::default();
     let mut rules = Vec::new();
     let mut next_rule_id = 1_u64;
 
@@ -284,6 +308,31 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     stats,
                 });
             }
+            Some("hosts") => {
+                if fields.len() != 2 {
+                    return Err(ConfigError::at(
+                        line_number,
+                        "hosts syntax is `hosts <path>`; paths with whitespace are not supported yet",
+                    ));
+                }
+                if hosts.len() >= MAX_HOSTS_FILES {
+                    return Err(ConfigError::at(
+                        line_number,
+                        format!("hosts file count exceeds {MAX_HOSTS_FILES}"),
+                    ));
+                }
+                let source = resolve_asset_path(asset_root, fields[1]);
+                if !hosts_paths.insert(source.clone()) {
+                    return Err(ConfigError::at(line_number, "duplicate hosts path"));
+                }
+                let table = load_hosts(&source, line_number)?;
+                let records = table.len();
+                hosts_table.merge(table);
+                hosts.push(HostsSummary {
+                    path: source,
+                    records,
+                });
+            }
             Some("rule") => {
                 if rules.len() >= MAX_RULES {
                     return Err(ConfigError::at(
@@ -325,7 +374,9 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
     Ok(CompiledConfig {
         listeners,
         blocklists,
+        hosts,
         runtime: Runtime::new(PolicyEngine::new(rules, default_action)),
+        dns: Arc::new(DnsEngine::system(hosts_table)),
     })
 }
 
@@ -371,6 +422,36 @@ fn load_blocklist(
     })?;
     let stats = compiled.stats();
     Ok((compiled.into_filter(), stats))
+}
+
+fn load_hosts(path: &Path, line: usize) -> Result<HostsTable, ConfigError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        ConfigError::at(
+            line,
+            format!("cannot stat hosts {}: {error}", path.display()),
+        )
+    })?;
+    if metadata.len() > MAX_HOSTS_BYTES as u64 {
+        return Err(ConfigError::at(
+            line,
+            format!(
+                "hosts {} exceeds {MAX_HOSTS_BYTES} byte limit",
+                path.display()
+            ),
+        ));
+    }
+    let text = fs::read_to_string(path).map_err(|error| {
+        ConfigError::at(
+            line,
+            format!("cannot read hosts {}: {error}", path.display()),
+        )
+    })?;
+    HostsTable::parse(&text).map_err(|error| {
+        ConfigError::at(
+            line,
+            format!("cannot compile hosts {}: {error}", path.display()),
+        )
+    })
 }
 
 fn parse_action(value: &str, line: usize) -> Result<PolicyAction, ConfigError> {
@@ -554,14 +635,34 @@ mod tests {
     }
 
     #[test]
-    fn missing_blocklist_fails_candidate_before_runtime_swap() {
+    fn hosts_override_is_compiled_into_dns_engine() {
+        let root = temp_dir();
+        fs::write(root.join("hosts.txt"), "203.0.113.7 service.test\n").unwrap();
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            hosts hosts.txt
+            default direct
+        "#;
+        let store = ConfigStore::new_at(config, &root).unwrap();
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(snapshot.hosts().len(), 1);
+        assert_eq!(
+            snapshot.dns().resolve("service.test").unwrap(),
+            vec!["203.0.113.7".parse().unwrap()]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_asset_fails_candidate_before_runtime_swap() {
         let root = temp_dir();
         let store = ConfigStore::new_at(VALID, &root).unwrap();
         let before = store.snapshot().unwrap();
         let candidate = r#"
             version 1
             listen socks5 127.0.0.1:1080
-            blocklist missing.txt
+            hosts missing.txt
             default direct
         "#;
         assert!(store.reload(candidate).is_err());
