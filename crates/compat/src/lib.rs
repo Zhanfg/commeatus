@@ -1,4 +1,4 @@
-//! `agent-compat`: compatibility boundary with existing proxy ecosystems.
+//! `commeatus-compat`: compatibility boundary with existing proxy ecosystems.
 //!
 //! Future home of translation layers for mihomo, sing-box, Clash API and
 //! subscription formats.
