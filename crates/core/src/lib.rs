@@ -1,8 +1,8 @@
 //! Native runtime core of Commeatus.
 //!
-//! V0.1 establishes a flow-centric policy pipeline. Compatibility formats and
-//! platform-specific objects must terminate at their boundaries before data
-//! enters these types.
+//! V0.2 keeps a flow-centric policy pipeline while adding compiled policy
+//! assets. Compatibility formats and platform-specific objects must terminate
+//! at their boundaries before data enters these types.
 //!
 //! ## Safety
 //!
@@ -12,12 +12,14 @@
 #![forbid(unsafe_code)]
 
 pub mod cidr;
+pub mod domain_set;
 pub mod flow;
 pub mod plan;
 pub mod policy;
 pub mod runtime;
 
 pub use cidr::{CidrParseError, IpCidr};
+pub use domain_set::{DomainFilter, DomainSet, DomainSetError, MAX_DOMAIN_LENGTH};
 pub use flow::{
     Destination, DestinationHost, FlowContext, FlowId, NetworkContext, NetworkKind, SourceContext,
     TransportProtocol,
