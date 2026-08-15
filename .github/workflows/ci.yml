@@ -61,14 +61,14 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-linux-android
-      - name: Verify Android NDK
+      - name: Configure Android NDK linker
         run: |
           test -n "$ANDROID_NDK_LATEST_HOME"
-          test -x "$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+          linker="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+          test -x "$linker"
           echo "Using NDK: $ANDROID_NDK_LATEST_HOME"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$linker" >> "$GITHUB_ENV"
       - name: Build Android arm64
-        env:
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.ANDROID_NDK_LATEST_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang
         run: cargo build --release --locked -p commeatus --target aarch64-linux-android
       - name: Verify Android binary
         run: |
