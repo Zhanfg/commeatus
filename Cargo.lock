@@ -6,12 +6,17 @@ version = 4
 name = "commeatus"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "commeatus-compat",
  "commeatus-core",
+ "commeatus-platform",
 ]
 
 [[package]]
 name = "commeatus-compat"
 version = "0.1.0-alpha.1"
+dependencies = [
+ "commeatus-core",
+]
 
 [[package]]
 name = "commeatus-core"
