@@ -2,8 +2,9 @@ use std::{
     io,
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
-        Arc, mpsc,
+        Arc,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
     time::Duration,
