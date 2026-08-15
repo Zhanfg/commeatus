@@ -1,6 +1,6 @@
 use std::{env, fs, path::Path, process};
 
-use commeatus::{config, Server};
+use commeatus::{Server, config};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
