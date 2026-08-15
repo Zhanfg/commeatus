@@ -1,0 +1,91 @@
+name: v0.3 verified merge gate
+
+on:
+  push:
+    branches:
+      - feat/v0.3-outbound-runtime
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: v03-verified-merge
+  cancel-in-progress: true
+
+jobs:
+  verify-and-merge:
+    name: Verify all gates and merge PR 9
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: aarch64-linux-android
+      - name: Rust quality and E2E
+        run: |
+          cargo fmt --all -- --check
+          cargo check --workspace --all-targets --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+          cargo build --workspace --release --locked
+          ./target/release/commeatus version
+          ./target/release/commeatus platform
+          ./target/release/commeatus check --config examples/commeatus.conf
+          ./target/release/commeatus check --config examples/proxy-outbound.conf
+      - name: Explicit Rust 1.85 MSRV
+        run: |
+          rustup toolchain install 1.85.0 --profile minimal --no-self-update
+          rustc +1.85.0 --version
+          cargo +1.85.0 check --workspace --all-targets --locked
+      - name: Compile and verify eBPF prototype
+        run: |
+          compiler=""
+          for candidate in clang-20 clang-19 clang-18 clang-17 clang; do
+            if command -v "$candidate" >/dev/null 2>&1; then
+              compiler="$candidate"
+              break
+            fi
+          done
+          test -n "$compiler"
+          mkdir -p build/ebpf
+          "$compiler" -target bpf -O2 -g \
+            -I/usr/include/x86_64-linux-gnu \
+            -c ebpf/flow.bpf.c -o build/ebpf/flow.bpf.o
+          file build/ebpf/flow.bpf.o | grep -Eq 'eBPF|BPF'
+          readelf -SW build/ebpf/flow.bpf.o | grep -q 'cgroup/connect4'
+          readelf -SW build/ebpf/flow.bpf.o | grep -q 'cgroup/connect6'
+          readelf -SW build/ebpf/flow.bpf.o | grep -q 'license'
+      - name: Configure Android NDK linker
+        run: |
+          test -n "$ANDROID_NDK_LATEST_HOME"
+          linker="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+          test -x "$linker"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$linker" >> "$GITHUB_ENV"
+      - name: Android arm64 release build
+        run: |
+          cargo build --release --locked -p commeatus --target aarch64-linux-android
+          file target/aarch64-linux-android/release/commeatus | grep -q 'ARM aarch64'
+      - name: Release package dry run
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          test -n "$version"
+          bash scripts/package-alpha.sh "$version" "$GITHUB_SHA" "$ANDROID_NDK_LATEST_HOME"
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Merge exact verified head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF_NAME" = "feat/v0.3-outbound-runtime"
+          gh pr view 9 --repo "$GITHUB_REPOSITORY" --json headRefOid,state \
+            --jq 'select(.state == "OPEN") | .headRefOid' | grep -qx "$GITHUB_SHA"
+          gh pr merge 9 \
+            --repo "$GITHUB_REPOSITORY" \
+            --squash \
+            --match-head-commit "$GITHUB_SHA" \
+            --subject "feat(v0.3): add native proxy endpoint execution" \
+            --body "Verified by the v0.3 Ubuntu gate: Rust quality/E2E, Rust 1.85 MSRV, eBPF compile, Android arm64 and release packaging all passed on this exact head."
