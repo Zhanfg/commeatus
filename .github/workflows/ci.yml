@@ -37,6 +37,7 @@ jobs:
       - name: CLI smoke
         run: |
           ./target/release/commeatus version
+          ./target/release/commeatus platform
           ./target/release/commeatus check --config examples/commeatus.conf
 
   msrv:
@@ -51,6 +52,36 @@ jobs:
         run: rustc +1.85.0 --version
       - name: Check MSRV
         run: cargo +1.85.0 check --workspace --all-targets --locked
+
+  ebpf:
+    name: eBPF compile prototype
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select Clang with BPF backend
+        run: |
+          for candidate in clang-20 clang-19 clang-18 clang-17 clang; do
+            if command -v "$candidate" >/dev/null 2>&1; then
+              echo "BPF_CLANG=$candidate" >> "$GITHUB_ENV"
+              "$candidate" --version
+              exit 0
+            fi
+          done
+          echo "no clang compiler found" >&2
+          exit 1
+      - name: Compile cgroup connect programs
+        run: |
+          mkdir -p build/ebpf
+          "$BPF_CLANG" -target bpf -O2 -g \
+            -I/usr/include/x86_64-linux-gnu \
+            -c ebpf/flow.bpf.c -o build/ebpf/flow.bpf.o
+      - name: Verify BPF ELF and sections
+        run: |
+          file build/ebpf/flow.bpf.o
+          file build/ebpf/flow.bpf.o | grep -Eq 'eBPF|BPF'
+          readelf -SW build/ebpf/flow.bpf.o | grep -q 'cgroup/connect4'
+          readelf -SW build/ebpf/flow.bpf.o | grep -q 'cgroup/connect6'
+          readelf -SW build/ebpf/flow.bpf.o | grep -q 'license'
 
   android-arm64:
     name: Android arm64 build
