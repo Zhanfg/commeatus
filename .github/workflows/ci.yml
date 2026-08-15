@@ -100,4 +100,4 @@ jobs:
           test -n "$version"
           bash scripts/package-alpha.sh "$version" "$GITHUB_SHA" "$ANDROID_NDK_LATEST_HOME"
           ls -lh dist
-          sha256sum -c dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
