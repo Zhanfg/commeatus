@@ -187,7 +187,9 @@ fn spawn_connection(
             }
         })
     {
-        eprintln!("commeatus: connection from {peer} rejected: cannot create handler thread: {error}");
+        eprintln!(
+            "commeatus: connection from {peer} rejected: cannot create handler thread: {error}"
+        );
     }
 }
 
