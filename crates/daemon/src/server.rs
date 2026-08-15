@@ -1,7 +1,10 @@
 use std::{
     io,
     net::{SocketAddr, TcpListener, TcpStream},
-    sync::{Arc, mpsc},
+    sync::{
+        Arc, mpsc,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -15,15 +18,63 @@ use crate::{
 
 const ACCEPT_ERROR_RETRY_LIMIT: usize = 8;
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+pub const MAX_ACTIVE_CONNECTIONS: usize = 256;
 
 struct BoundListener {
     protocol: ListenerProtocol,
     listener: TcpListener,
 }
 
+struct ConnectionLimiter {
+    active: AtomicUsize,
+    limit: usize,
+}
+
+impl ConnectionLimiter {
+    fn new(limit: usize) -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn try_acquire(self: &Arc<Self>) -> Option<ConnectionPermit> {
+        let mut active = self.active.load(Ordering::Relaxed);
+        loop {
+            if active >= self.limit {
+                return None;
+            }
+            match self.active.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Some(ConnectionPermit {
+                        limiter: Arc::clone(self),
+                    });
+                }
+                Err(current) => active = current,
+            }
+        }
+    }
+}
+
+struct ConnectionPermit {
+    limiter: Arc<ConnectionLimiter>,
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.limiter.active.fetch_sub(1, Ordering::Release);
+    }
+}
+
 pub struct Server {
     listeners: Vec<BoundListener>,
     runtime: Arc<Runtime>,
+    limiter: Arc<ConnectionLimiter>,
 }
 
 impl Server {
@@ -43,6 +94,7 @@ impl Server {
         Ok(Self {
             listeners,
             runtime: Arc::new(config.runtime().clone()),
+            limiter: Arc::new(ConnectionLimiter::new(MAX_ACTIVE_CONNECTIONS)),
         })
     }
 
@@ -51,10 +103,11 @@ impl Server {
 
         for bound in self.listeners {
             let runtime = Arc::clone(&self.runtime);
+            let limiter = Arc::clone(&self.limiter);
             let tx = exit_tx.clone();
             let address = bound.listener.local_addr()?;
             thread::spawn(move || {
-                let result = serve_forever(bound.listener, bound.protocol, runtime);
+                let result = serve_forever(bound.listener, bound.protocol, runtime, limiter);
                 let _ = tx.send((address, result));
             });
         }
@@ -77,13 +130,20 @@ fn serve_forever(
     listener: TcpListener,
     protocol: ListenerProtocol,
     runtime: Arc<Runtime>,
+    limiter: Arc<ConnectionLimiter>,
 ) -> io::Result<()> {
     let mut consecutive_errors = 0_usize;
     loop {
         match listener.accept() {
             Ok((stream, peer)) => {
                 consecutive_errors = 0;
-                spawn_connection(stream, peer, protocol, Arc::clone(&runtime));
+                spawn_connection(
+                    stream,
+                    peer,
+                    protocol,
+                    Arc::clone(&runtime),
+                    Arc::clone(&limiter),
+                );
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => {
@@ -105,8 +165,18 @@ fn spawn_connection(
     peer: SocketAddr,
     protocol: ListenerProtocol,
     runtime: Arc<Runtime>,
+    limiter: Arc<ConnectionLimiter>,
 ) {
+    let Some(permit) = limiter.try_acquire() else {
+        eprintln!(
+            "commeatus: connection from {peer} rejected: active connection limit {MAX_ACTIVE_CONNECTIONS} reached"
+        );
+        drop(stream);
+        return;
+    };
+
     thread::spawn(move || {
+        let _permit = permit;
         if let Err(error) = handle_connection(stream, protocol, runtime) {
             eprintln!("commeatus: connection from {peer} ended with error: {error}");
         }
@@ -159,4 +229,23 @@ fn serve_n(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_limiter_never_exceeds_limit_and_releases_permits() {
+        let limiter = Arc::new(ConnectionLimiter::new(2));
+        let first = limiter.try_acquire().unwrap();
+        let second = limiter.try_acquire().unwrap();
+        assert!(limiter.try_acquire().is_none());
+        drop(first);
+        let third = limiter.try_acquire().unwrap();
+        assert!(limiter.try_acquire().is_none());
+        drop(second);
+        drop(third);
+        assert_eq!(limiter.active.load(Ordering::Relaxed), 0);
+    }
 }
