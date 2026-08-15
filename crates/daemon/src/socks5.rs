@@ -2,6 +2,7 @@ use std::{
     io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
     sync::Arc,
+    time::Duration,
 };
 
 use commeatus_core::{DestinationHost, Runtime};
@@ -12,8 +13,12 @@ const VERSION: u8 = 0x05;
 const METHOD_NO_AUTH: u8 = 0x00;
 const METHOD_UNACCEPTABLE: u8 = 0xff;
 const COMMAND_CONNECT: u8 = 0x01;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
+    client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+
     negotiate_method(&mut client)?;
     let target = read_connect_request(&mut client)?;
 
@@ -32,6 +37,8 @@ pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
     };
 
     write_reply(&mut client, 0x00, remote.local_addr().ok())?;
+    client.set_read_timeout(None)?;
+    client.set_write_timeout(None)?;
     proxy::relay(client, remote)
 }
 
