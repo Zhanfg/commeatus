@@ -7,6 +7,7 @@ use std::{
 };
 
 use commeatus_core::{DestinationHost, Runtime, TransportProtocol};
+use commeatus_dns::DnsEngine;
 
 use crate::proxy::{self, Authorization, Target};
 
@@ -21,24 +22,33 @@ const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_UDP_PACKET: usize = 65_535;
 const MAX_UDP_REMOTE_PEERS: usize = 256;
 
-pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
+pub fn handle(
+    mut client: TcpStream,
+    runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
+) -> io::Result<()> {
     client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
     negotiate_method(&mut client)?;
     match read_request(&mut client)? {
-        Request::Connect(target) => handle_connect(client, runtime, target),
-        Request::UdpAssociate(hint) => handle_udp_associate(client, runtime, hint),
+        Request::Connect(target) => handle_connect(client, runtime, dns, target),
+        Request::UdpAssociate(hint) => handle_udp_associate(client, runtime, dns, hint),
     }
 }
 
-fn handle_connect(mut client: TcpStream, runtime: Arc<Runtime>, target: Target) -> io::Result<()> {
+fn handle_connect(
+    mut client: TcpStream,
+    runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
+    target: Target,
+) -> io::Result<()> {
     if proxy::authorize(&runtime, &target, TransportProtocol::Tcp) == Authorization::Reject {
         write_reply(&mut client, 0x02, None)?;
         return Ok(());
     }
 
-    let remote = match proxy::connect_direct(&target) {
+    let remote = match proxy::connect_direct(&target, &dns) {
         Ok(remote) => remote,
         Err(error) => {
             let code = connect_error_code(&error);
@@ -154,6 +164,7 @@ fn read_address(stream: &mut TcpStream, address_type: u8) -> io::Result<(Destina
 fn handle_udp_associate(
     mut control: TcpStream,
     runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
     hint: UdpClientHint,
 ) -> io::Result<()> {
     let control_peer = control.peer_addr()?;
@@ -197,6 +208,7 @@ fn handle_udp_associate(
                     handle_udp_client_packet(
                         &relay,
                         &runtime,
+                        &dns,
                         &packet[..length],
                         &mut remote_peers,
                     );
@@ -236,6 +248,7 @@ fn is_client_packet(source: SocketAddr, control_ip: IpAddr, client: Option<Socke
 fn handle_udp_client_packet(
     relay: &UdpSocket,
     runtime: &Runtime,
+    dns: &DnsEngine,
     packet: &[u8],
     remote_peers: &mut HashSet<SocketAddr>,
 ) {
@@ -246,7 +259,7 @@ fn handle_udp_client_packet(
         return;
     }
 
-    let Ok(addresses) = proxy::resolve_target(&target) else {
+    let Ok(addresses) = proxy::resolve_target(&target, dns) else {
         return;
     };
     for address in addresses {
