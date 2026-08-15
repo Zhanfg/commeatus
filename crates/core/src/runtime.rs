@@ -78,7 +78,7 @@ mod tests {
         assert_eq!(
             plan.action,
             ExecutionAction::Route {
-                endpoint: Endpoint::Direct
+                endpoint: Endpoint::Direct,
             }
         );
     }
@@ -100,7 +100,7 @@ mod tests {
         assert_eq!(
             plan.action,
             ExecutionAction::Reject {
-                reason: RejectReason::Policy
+                reason: RejectReason::Policy,
             }
         );
     }
