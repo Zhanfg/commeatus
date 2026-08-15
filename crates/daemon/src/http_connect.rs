@@ -13,11 +13,7 @@ use crate::proxy::{self, Authorization, Target};
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn handle(
-    mut client: TcpStream,
-    runtime: Arc<Runtime>,
-    dns: Arc<DnsEngine>,
-) -> io::Result<()> {
+pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>, dns: Arc<DnsEngine>) -> io::Result<()> {
     client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
