@@ -2,6 +2,7 @@ use std::{
     io::{self, Read, Write},
     net::{IpAddr, TcpStream},
     sync::Arc,
+    time::Duration,
 };
 
 use commeatus_core::{DestinationHost, Runtime};
@@ -9,8 +10,12 @@ use commeatus_core::{DestinationHost, Runtime};
 use crate::proxy::{self, Authorization, Target};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
+    client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+
     let (target, buffered_tunnel_bytes) = match read_request(&mut client) {
         Ok(request) => request,
         Err(error) => {
@@ -44,6 +49,8 @@ pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>) -> io::Result<()> {
     if !buffered_tunnel_bytes.is_empty() {
         remote.write_all(&buffered_tunnel_bytes)?;
     }
+    client.set_read_timeout(None)?;
+    client.set_write_timeout(None)?;
     proxy::relay(client, remote)
 }
 
@@ -59,7 +66,8 @@ fn read_request(stream: &mut TcpStream) -> io::Result<(Target, Vec<u8>)> {
 
         let remaining = MAX_HEADER_BYTES - buffer.len();
         let mut chunk = [0_u8; 1024];
-        let read = stream.read(&mut chunk[..remaining.min(chunk.len())])?;
+        let read_limit = remaining.min(chunk.len());
+        let read = stream.read(&mut chunk[..read_limit])?;
         if read == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
