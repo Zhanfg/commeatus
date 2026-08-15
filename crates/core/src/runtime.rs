@@ -42,8 +42,7 @@ mod tests {
     use super::*;
     use crate::{
         flow::{
-            Destination, DestinationHost, FlowId, NetworkContext, SourceContext,
-            TransportProtocol,
+            Destination, DestinationHost, FlowId, NetworkContext, SourceContext, TransportProtocol,
         },
         plan::{Endpoint, RejectReason},
         policy::{Matcher, PolicyAction, PolicyRule, PolicyTier, RuleId},
