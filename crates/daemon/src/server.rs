@@ -1,7 +1,7 @@
 use std::{
     io,
     net::{SocketAddr, TcpListener, TcpStream},
-    sync::{mpsc, Arc},
+    sync::{Arc, mpsc},
     thread,
     time::Duration,
 };
