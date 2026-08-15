@@ -132,7 +132,9 @@ fn normalize_domain(value: String) -> Result<String, DomainSetError> {
     if value.is_empty()
         || value.len() > MAX_DOMAIN_LENGTH
         || !value.is_ascii()
-        || value.split('.').any(|label| label.is_empty() || label.len() > 63)
+        || value
+            .split('.')
+            .any(|label| label.is_empty() || label.len() > 63)
     {
         return Err(DomainSetError {
             message: format!("invalid domain `{value}`"),
