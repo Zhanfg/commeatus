@@ -153,10 +153,10 @@ fn serve_n(
     }
 
     for connection in connections {
-        let result = connection
-            .join()
-            .map_err(|_| io::Error::other("test connection handler panicked"))?;
-        result?;
+        match connection.join() {
+            Ok(Ok(())) | Ok(Err(_)) => {}
+            Err(_) => return Err(io::Error::other("test connection handler panicked")),
+        }
     }
     Ok(())
 }
