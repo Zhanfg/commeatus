@@ -1,10 +1,12 @@
 use std::{
     collections::HashSet,
-    fmt,
+    fmt, fs,
     net::SocketAddr,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
+use commeatus_compat::{BlocklistStats, MAX_BLOCKLIST_BYTES, compile_blocklist};
 use commeatus_core::{
     Endpoint, IpCidr, Matcher, PolicyAction, PolicyEngine, PolicyRule, PolicyTier, RejectReason,
     RuleId, Runtime,
@@ -13,6 +15,7 @@ use commeatus_core::{
 pub const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 pub const MAX_RULES: usize = 4096;
 pub const MAX_LISTENERS: usize = 16;
+pub const MAX_BLOCKLISTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ListenerProtocol {
@@ -26,9 +29,16 @@ pub struct ListenerConfig {
     pub address: SocketAddr,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlocklistSummary {
+    pub path: PathBuf,
+    pub stats: BlocklistStats,
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledConfig {
     listeners: Vec<ListenerConfig>,
+    blocklists: Vec<BlocklistSummary>,
     runtime: Runtime,
 }
 
@@ -36,6 +46,11 @@ impl CompiledConfig {
     #[must_use]
     pub fn listeners(&self) -> &[ListenerConfig] {
         &self.listeners
+    }
+
+    #[must_use]
+    pub fn blocklists(&self) -> &[BlocklistSummary] {
+        &self.blocklists
     }
 
     #[must_use]
@@ -80,22 +95,28 @@ impl std::error::Error for ConfigError {}
 
 /// Active configuration holder with transactional replacement semantics.
 ///
-/// A candidate is fully parsed and compiled before the write lock is acquired.
-/// Invalid candidates therefore cannot partially mutate the active runtime.
+/// Blocklist assets are read and compiled as part of the candidate. Invalid or
+/// oversized assets therefore cannot partially mutate the active runtime.
 pub struct ConfigStore {
     active: RwLock<Arc<CompiledConfig>>,
+    asset_root: PathBuf,
 }
 
 impl ConfigStore {
     pub fn new(text: &str) -> Result<Self, ConfigError> {
-        let compiled = Arc::new(parse_config(text)?);
+        Self::new_at(text, Path::new("."))
+    }
+
+    pub fn new_at(text: &str, asset_root: &Path) -> Result<Self, ConfigError> {
+        let compiled = Arc::new(parse_config_at(text, asset_root)?);
         Ok(Self {
             active: RwLock::new(compiled),
+            asset_root: asset_root.to_path_buf(),
         })
     }
 
     pub fn reload(&self, text: &str) -> Result<(), ConfigError> {
-        let candidate = Arc::new(parse_config(text)?);
+        let candidate = Arc::new(parse_config_at(text, &self.asset_root)?);
         let mut active = self
             .active
             .write()
@@ -113,6 +134,10 @@ impl ConfigStore {
 }
 
 pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
+    parse_config_at(text, Path::new("."))
+}
+
+pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, ConfigError> {
     if text.len() > MAX_CONFIG_BYTES {
         return Err(ConfigError::global(format!(
             "configuration exceeds {MAX_CONFIG_BYTES} byte limit"
@@ -124,7 +149,10 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
     let mut allow_public_listen = None;
     let mut listeners = Vec::new();
     let mut listener_addresses = HashSet::new();
+    let mut blocklists = Vec::new();
+    let mut blocklist_paths = HashSet::new();
     let mut rules = Vec::new();
+    let mut next_rule_id = 1_u64;
 
     for (index, raw_line) in text.lines().enumerate() {
         let line_number = index + 1;
@@ -220,6 +248,42 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
                 }
                 default_action = Some(parse_action(fields[1], line_number)?);
             }
+            Some("blocklist") => {
+                if fields.len() != 2 {
+                    return Err(ConfigError::at(
+                        line_number,
+                        "blocklist syntax is `blocklist <path>`; paths with whitespace are not supported yet",
+                    ));
+                }
+                if blocklists.len() >= MAX_BLOCKLISTS {
+                    return Err(ConfigError::at(
+                        line_number,
+                        format!("blocklist count exceeds {MAX_BLOCKLISTS}"),
+                    ));
+                }
+                if rules.len() >= MAX_RULES {
+                    return Err(ConfigError::at(
+                        line_number,
+                        format!("rule count exceeds {MAX_RULES}"),
+                    ));
+                }
+                let source = resolve_asset_path(asset_root, fields[1]);
+                if !blocklist_paths.insert(source.clone()) {
+                    return Err(ConfigError::at(line_number, "duplicate blocklist path"));
+                }
+                let (filter, stats) = load_blocklist(&source, line_number)?;
+                rules.push(PolicyRule {
+                    id: RuleId::new(next_rule_id),
+                    tier: PolicyTier::UserHard,
+                    matcher: Matcher::DomainFilter(filter),
+                    action: PolicyAction::Reject(RejectReason::Policy),
+                });
+                next_rule_id += 1;
+                blocklists.push(BlocklistSummary {
+                    path: source,
+                    stats,
+                });
+            }
             Some("rule") => {
                 if rules.len() >= MAX_RULES {
                     return Err(ConfigError::at(
@@ -227,7 +291,8 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
                         format!("rule count exceeds {MAX_RULES}"),
                     ));
                 }
-                rules.push(parse_rule(&fields, line_number, rules.len() as u64 + 1)?);
+                rules.push(parse_rule(&fields, line_number, next_rule_id)?);
+                next_rule_id += 1;
             }
             Some(other) => {
                 return Err(ConfigError::at(
@@ -259,8 +324,53 @@ pub fn parse_config(text: &str) -> Result<CompiledConfig, ConfigError> {
 
     Ok(CompiledConfig {
         listeners,
+        blocklists,
         runtime: Runtime::new(PolicyEngine::new(rules, default_action)),
     })
+}
+
+fn resolve_asset_path(root: &Path, value: &str) -> PathBuf {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+fn load_blocklist(
+    path: &Path,
+    line: usize,
+) -> Result<(commeatus_core::DomainFilter, BlocklistStats), ConfigError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        ConfigError::at(
+            line,
+            format!("cannot stat blocklist {}: {error}", path.display()),
+        )
+    })?;
+    if metadata.len() > MAX_BLOCKLIST_BYTES as u64 {
+        return Err(ConfigError::at(
+            line,
+            format!(
+                "blocklist {} exceeds {MAX_BLOCKLIST_BYTES} byte limit",
+                path.display()
+            ),
+        ));
+    }
+    let text = fs::read_to_string(path).map_err(|error| {
+        ConfigError::at(
+            line,
+            format!("cannot read blocklist {}: {error}", path.display()),
+        )
+    })?;
+    let compiled = compile_blocklist(&text).map_err(|error| {
+        ConfigError::at(
+            line,
+            format!("cannot compile blocklist {}: {error}", path.display()),
+        )
+    })?;
+    let stats = compiled.stats();
+    Ok((compiled.into_filter(), stats))
 }
 
 fn parse_action(value: &str, line: usize) -> Result<PolicyAction, ConfigError> {
@@ -307,10 +417,20 @@ fn parse_rule(fields: &[&str], line: usize, id: u64) -> Result<PolicyRule, Confi
             }
             Matcher::Port(port)
         }
+        "transport" if fields.len() == 4 => Matcher::Transport(match fields[3] {
+            "tcp" => commeatus_core::TransportProtocol::Tcp,
+            "udp" => commeatus_core::TransportProtocol::Udp,
+            _ => {
+                return Err(ConfigError::at(
+                    line,
+                    "transport matcher must be `tcp` or `udp`",
+                ));
+            }
+        }),
         _ => {
             return Err(ConfigError::at(
                 line,
-                "supported matchers: any, domain-exact, domain-suffix, ip, cidr, port",
+                "supported matchers: any, domain-exact, domain-suffix, ip, cidr, port, transport",
             ));
         }
     };
@@ -333,6 +453,8 @@ fn normalize_domain(value: &str, line: usize) -> Result<String, ConfigError> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use commeatus_core::{
         Destination, DestinationHost, ExecutionAction, FlowContext, FlowId, NetworkContext,
         SourceContext, TransportProtocol,
@@ -362,6 +484,16 @@ mod tests {
             .action
     }
 
+    fn temp_dir() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("commeatus-config-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
     #[test]
     fn native_config_compiles_into_policy_runtime() {
         let store = ConfigStore::new(VALID).unwrap();
@@ -383,6 +515,58 @@ mod tests {
             plan(&store, DestinationHost::Ip("10.20.30.40".parse().unwrap())),
             ExecutionAction::Reject { .. }
         ));
+    }
+
+    #[test]
+    fn blocklist_is_compiled_relative_to_config_directory() {
+        let root = temp_dir();
+        fs::write(
+            root.join("ads.txt"),
+            "0.0.0.0 ads.example\n||telemetry.example^\n@@||api.telemetry.example^\n",
+        )
+        .unwrap();
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            blocklist ads.txt
+            default direct
+        "#;
+        let store = ConfigStore::new_at(config, &root).unwrap();
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(snapshot.blocklists().len(), 1);
+        assert_eq!(snapshot.blocklists()[0].stats.accepted_block, 2);
+        assert!(matches!(
+            plan(
+                &store,
+                DestinationHost::Domain("x.telemetry.example".to_owned())
+            ),
+            ExecutionAction::Reject { .. }
+        ));
+        assert!(matches!(
+            plan(
+                &store,
+                DestinationHost::Domain("api.telemetry.example".to_owned())
+            ),
+            ExecutionAction::Route { .. }
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_blocklist_fails_candidate_before_runtime_swap() {
+        let root = temp_dir();
+        let store = ConfigStore::new_at(VALID, &root).unwrap();
+        let before = store.snapshot().unwrap();
+        let candidate = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            blocklist missing.txt
+            default direct
+        "#;
+        assert!(store.reload(candidate).is_err());
+        let after = store.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&before, &after));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -421,6 +605,17 @@ mod tests {
             default direct
         "#;
         assert!(parse_config(explicit).is_ok());
+    }
+
+    #[test]
+    fn transport_matcher_is_available_to_native_config() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            rule reject transport udp
+            default direct
+        "#;
+        assert!(parse_config(config).is_ok());
     }
 
     #[test]
