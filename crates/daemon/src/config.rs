@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fmt,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     sync::{Arc, RwLock},
 };
 
