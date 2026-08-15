@@ -2,6 +2,7 @@ use std::net::IpAddr;
 
 use crate::{
     cidr::IpCidr,
+    domain_set::DomainFilter,
     flow::{DestinationHost, FlowContext, NetworkKind, TransportProtocol},
     plan::{Endpoint, RejectReason},
 };
@@ -51,6 +52,7 @@ pub enum Matcher {
     Package(String),
     DomainExact(String),
     DomainSuffix(String),
+    DomainFilter(DomainFilter),
     Ip(IpAddr),
     Cidr(IpCidr),
     Port(u16),
@@ -78,6 +80,10 @@ impl Matcher {
             },
             Self::DomainSuffix(suffix) => match &flow.destination.host {
                 DestinationHost::Domain(domain) => domain_matches_suffix(domain, suffix),
+                DestinationHost::Ip(_) => false,
+            },
+            Self::DomainFilter(filter) => match &flow.destination.host {
+                DestinationHost::Domain(domain) => filter.is_blocked(domain),
                 DestinationHost::Ip(_) => false,
             },
             Self::Ip(expected) => match &flow.destination.host {
@@ -155,8 +161,6 @@ pub struct PolicyEngine {
 impl PolicyEngine {
     #[must_use]
     pub fn new(mut rules: Vec<PolicyRule>, default_action: PolicyAction) -> Self {
-        // Stable sorting moves authority ordering out of the per-flow hot path
-        // while preserving first-match order inside each tier.
         rules.sort_by_key(|rule| rule.tier.rank());
         Self {
             rules,
@@ -187,7 +191,10 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use super::*;
-    use crate::flow::{Destination, FlowId, NetworkContext, SourceContext, TransportProtocol};
+    use crate::{
+        domain_set::{DomainFilter, DomainSet},
+        flow::{Destination, FlowId, NetworkContext, SourceContext, TransportProtocol},
+    };
 
     fn domain_flow(domain: &str, uid: u32) -> FlowContext {
         FlowContext::new(
@@ -224,6 +231,15 @@ mod tests {
         assert!(matcher.matches(&domain_flow("example.com", 1)));
         assert!(matcher.matches(&domain_flow("api.example.com", 1)));
         assert!(!matcher.matches(&domain_flow("badexample.com", 1)));
+    }
+
+    #[test]
+    fn compiled_domain_filter_honors_exception_without_forcing_route() {
+        let blocked = DomainSet::compile(Vec::new(), vec!["example.com".to_owned()]).unwrap();
+        let allowed = DomainSet::compile(Vec::new(), vec!["api.example.com".to_owned()]).unwrap();
+        let matcher = Matcher::DomainFilter(DomainFilter::new(blocked, allowed));
+        assert!(matcher.matches(&domain_flow("ads.example.com", 1)));
+        assert!(!matcher.matches(&domain_flow("api.example.com", 1)));
     }
 
     #[test]
