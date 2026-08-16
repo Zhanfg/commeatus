@@ -22,3 +22,5 @@ mod outbound_e2e;
 mod tls_outbound_e2e;
 #[cfg(test)]
 mod trojan_outbound_e2e;
+#[cfg(test)]
+mod trojan_udp_e2e;
