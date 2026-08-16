@@ -20,3 +20,4 @@ ADRs that supersede or amend earlier ones.
 - [ADR-0012: Trojan UDP Is a Dedicated Datagram Provider](0012-trojan-udp-is-a-dedicated-datagram-provider.md)
 - [ADR-0013: Resolvers Own DNS Answer Metadata](0013-resolvers-own-dns-answer-metadata.md)
 - [ADR-0014: Secure DNS Fallback Must Be Explicit](0014-secure-dns-fallback-must-be-explicit.md)
+- [ADR-0015: TPROXY Is an Ingress, Not Policy](0015-tproxy-is-an-ingress-not-policy.md)
