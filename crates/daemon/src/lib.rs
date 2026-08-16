@@ -8,6 +8,8 @@ mod protocol;
 mod proxy;
 pub mod server;
 mod socks5;
+mod trojan;
+mod trojan_datagram;
 
 pub use config::{CompiledConfig, ConfigError, ConfigStore, ListenerConfig, ListenerProtocol};
 pub use server::Server;

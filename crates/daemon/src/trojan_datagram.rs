@@ -1,8 +1,4 @@
-use std::{
-    collections::VecDeque,
-    fmt, io,
-    sync::Arc,
-};
+use std::{collections::VecDeque, fmt, io, sync::Arc};
 
 use commeatus_transport::{TlsFramedSession, TlsTransport};
 use mio::{Registry, Token};
@@ -92,7 +88,10 @@ impl TrojanDatagramExecution {
             ));
         }
         let next = self.pending_bytes.checked_add(bytes.len()).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::OutOfMemory, "Trojan UDP pending byte count overflow")
+            io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "Trojan UDP pending byte count overflow",
+            )
         })?;
         if next > MAX_PENDING_BYTES {
             return Err(io::Error::new(
@@ -266,8 +265,12 @@ mod tests {
         // Construction of TlsTransport requires a valid server name but does
         // not connect until `open()`, so this test is network-free.
         let verifier = TrojanVerifier::new("super-secret").unwrap();
-        let transport = TlsTransport::webpki("127.0.0.1:443".parse().unwrap(), "proxy.test").unwrap();
-        let debug = format!("{:?}", TrojanDatagramProvider::new(verifier.clone(), transport));
+        let transport =
+            TlsTransport::webpki("127.0.0.1:443".parse().unwrap(), "proxy.test").unwrap();
+        let debug = format!(
+            "{:?}",
+            TrojanDatagramProvider::new(verifier.clone(), transport)
+        );
         let verifier_text = std::str::from_utf8(verifier.as_bytes()).unwrap();
         assert!(!debug.contains(verifier_text));
         assert!(debug.contains("[REDACTED]"));

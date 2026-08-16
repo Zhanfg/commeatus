@@ -121,7 +121,10 @@ pub fn parse_udp_frame(data: &[u8]) -> io::Result<Option<ParsedUdpFrame>> {
     }
     let payload_start = address_len + 4;
     let consumed = payload_start.checked_add(length).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "Trojan UDP frame length overflow")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Trojan UDP frame length overflow",
+        )
     })?;
     if data.len() < consumed {
         return Ok(None);
@@ -253,7 +256,10 @@ mod tests {
         let verifier = TrojanVerifier::new("secret").unwrap();
         let request = encode_udp_associate_request(&verifier);
         assert_eq!(&request[..TROJAN_VERIFIER_BYTES], verifier.as_bytes());
-        assert_eq!(&request[TROJAN_VERIFIER_BYTES..TROJAN_VERIFIER_BYTES + 2], b"\r\n");
+        assert_eq!(
+            &request[TROJAN_VERIFIER_BYTES..TROJAN_VERIFIER_BYTES + 2],
+            b"\r\n"
+        );
         assert_eq!(request[TROJAN_VERIFIER_BYTES + 2], TROJAN_UDP_ASSOCIATE);
         assert_eq!(
             &request[TROJAN_VERIFIER_BYTES + 3..],
@@ -264,15 +270,15 @@ mod tests {
     #[test]
     fn udp_frame_parser_handles_partial_multiple_and_zero_length_frames() {
         let first = Target::new(DestinationHost::Domain("opaque.invalid".to_owned()), 443).unwrap();
-        let second = Target::new(
-            DestinationHost::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)),
-            53,
-        )
-        .unwrap();
+        let second = Target::new(DestinationHost::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)), 53).unwrap();
         let first_wire = encode_udp_frame(&first, b"abc").unwrap();
         let second_wire = encode_udp_frame(&second, b"").unwrap();
 
-        assert!(parse_udp_frame(&first_wire[..first_wire.len() - 1]).unwrap().is_none());
+        assert!(
+            parse_udp_frame(&first_wire[..first_wire.len() - 1])
+                .unwrap()
+                .is_none()
+        );
         let mut joined = first_wire.clone();
         joined.extend_from_slice(&second_wire);
 
@@ -281,7 +287,9 @@ mod tests {
         assert_eq!(&joined[parsed.payload.clone()], b"abc");
         assert_eq!(parsed.consumed, first_wire.len());
 
-        let parsed_zero = parse_udp_frame(&joined[parsed.consumed..]).unwrap().unwrap();
+        let parsed_zero = parse_udp_frame(&joined[parsed.consumed..])
+            .unwrap()
+            .unwrap();
         assert_eq!(parsed_zero.source, second);
         assert!(parsed_zero.payload.is_empty());
         assert_eq!(parsed_zero.consumed, second_wire.len());
@@ -289,11 +297,8 @@ mod tests {
 
     #[test]
     fn udp_frame_rejects_bad_crlf_and_supports_ipv4() {
-        let target = Target::new(
-            DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-            5353,
-        )
-        .unwrap();
+        let target =
+            Target::new(DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)), 5353).unwrap();
         let mut frame = encode_udp_frame(&target, b"payload").unwrap();
         let crlf = 1 + 4 + 2 + 2;
         frame[crlf] = b'X';

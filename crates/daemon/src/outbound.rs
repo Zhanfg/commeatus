@@ -228,7 +228,9 @@ mod tests {
         let id = EndpointId::new("trojan").unwrap();
         let result = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
-            protocol: protocol::trojan("secret").unwrap(),
+            protocol: protocol::trojan_with_verifier(
+                crate::trojan::TrojanVerifier::new("secret").unwrap(),
+            ),
             datagram: None,
             transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:443".parse().unwrap())),
         }]);
