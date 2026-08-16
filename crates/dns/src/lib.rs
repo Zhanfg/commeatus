@@ -379,7 +379,10 @@ impl fmt::Debug for DnsEngine {
             .debug_struct("DnsEngine")
             .field("hosts_entries", &self.hosts.len())
             .field("resolver_count", &self.resolvers.len())
-            .field("cache_capacity", &self.cache.lock().map(|cache| cache.capacity).ok())
+            .field(
+                "cache_capacity",
+                &self.cache.lock().map(|cache| cache.capacity).ok(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -531,7 +534,10 @@ mod tests {
             "127.0.0.1 localhost\n0.0.0.0 ads.example tracker.example # block\n::1 ip6.local\n",
         )
         .unwrap();
-        assert_eq!(table.resolve("ads.example").unwrap(), vec!["0.0.0.0".parse::<IpAddr>().unwrap()]);
+        assert_eq!(
+            table.resolve("ads.example").unwrap(),
+            vec!["0.0.0.0".parse::<IpAddr>().unwrap()]
+        );
         assert_eq!(table.len(), 4);
     }
 
@@ -545,14 +551,13 @@ mod tests {
     fn hosts_precede_resolvers() {
         let hosts = HostsTable::parse("203.0.113.9 service.example\n").unwrap();
         let resolver = Arc::new(StaticResolver::success("198.51.100.1"));
-        let engine = DnsEngine::with_resolvers(
-            hosts,
-            vec![resolver.clone()],
-            16,
-            Duration::from_secs(60),
-        )
-        .unwrap();
-        assert_eq!(engine.resolve("service.example").unwrap(), vec!["203.0.113.9".parse::<IpAddr>().unwrap()]);
+        let engine =
+            DnsEngine::with_resolvers(hosts, vec![resolver.clone()], 16, Duration::from_secs(60))
+                .unwrap();
+        assert_eq!(
+            engine.resolve("service.example").unwrap(),
+            vec!["203.0.113.9".parse::<IpAddr>().unwrap()]
+        );
         assert_eq!(resolver.calls.load(Ordering::Relaxed), 0);
         assert_eq!(engine.stats().hosts_hits, 1);
     }
@@ -567,8 +572,14 @@ mod tests {
             Duration::from_secs(60),
         )
         .unwrap();
-        assert_eq!(engine.resolve("cache.example").unwrap(), vec!["198.51.100.7".parse::<IpAddr>().unwrap()]);
-        assert_eq!(engine.resolve("cache.example").unwrap(), vec!["198.51.100.7".parse::<IpAddr>().unwrap()]);
+        assert_eq!(
+            engine.resolve("cache.example").unwrap(),
+            vec!["198.51.100.7".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(
+            engine.resolve("cache.example").unwrap(),
+            vec!["198.51.100.7".parse::<IpAddr>().unwrap()]
+        );
         assert_eq!(resolver.calls.load(Ordering::Relaxed), 1);
         assert_eq!(engine.stats().cache_hits, 1);
     }
@@ -603,7 +614,10 @@ mod tests {
             Duration::from_secs(60),
         )
         .unwrap();
-        assert_eq!(engine.resolve("fallback.example").unwrap(), vec!["192.0.2.44".parse::<IpAddr>().unwrap()]);
+        assert_eq!(
+            engine.resolve("fallback.example").unwrap(),
+            vec!["192.0.2.44".parse::<IpAddr>().unwrap()]
+        );
         assert_eq!(failing.calls.load(Ordering::Relaxed), 1);
         assert_eq!(success.calls.load(Ordering::Relaxed), 1);
         assert_eq!(engine.stats().resolver_failures, 1);
@@ -611,19 +625,23 @@ mod tests {
 
     #[test]
     fn cache_configuration_is_bounded() {
-        assert!(DnsEngine::with_resolvers(
-            HostsTable::default(),
-            vec![Arc::new(SystemResolver)],
-            0,
-            Duration::from_secs(60),
-        )
-        .is_err());
-        assert!(DnsEngine::with_resolvers(
-            HostsTable::default(),
-            vec![Arc::new(SystemResolver)],
-            1,
-            MAX_CACHE_TTL + Duration::from_secs(1),
-        )
-        .is_err());
+        assert!(
+            DnsEngine::with_resolvers(
+                HostsTable::default(),
+                vec![Arc::new(SystemResolver)],
+                0,
+                Duration::from_secs(60),
+            )
+            .is_err()
+        );
+        assert!(
+            DnsEngine::with_resolvers(
+                HostsTable::default(),
+                vec![Arc::new(SystemResolver)],
+                1,
+                MAX_CACHE_TTL + Duration::from_secs(1),
+            )
+            .is_err()
+        );
     }
 }

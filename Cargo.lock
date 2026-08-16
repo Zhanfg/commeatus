@@ -65,6 +65,9 @@ name = "commeatus-dns"
 version = "0.5.0-alpha.1"
 dependencies = [
  "commeatus-transport",
+ "rcgen",
+ "rustls",
+ "time",
 ]
 
 [[package]]
