@@ -18,42 +18,23 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt
-      - name: Apply exact transparent UDP rollback patch
+      - name: Apply bounded transparent UDP rollback patch
         run: |
           python3 - <<'PY'
           from pathlib import Path
+
           path = Path('crates/daemon/src/transparent_udp.rs')
           text = path.read_text()
-          old = '''    if !clients.contains_key(&client) {
-              cleanup_idle_clients(clients, token_clients, Instant::now());
-              if clients.len() >= MAX_CLIENTS {
-                  return false;
-              }
-              clients.insert(
-                  client,
-                  ClientState {
-                      routes: DatagramRouteSet::new(),
-                      last_activity: Instant::now(),
-                  },
-              );
-          }
-      
-          let state = clients.get_mut(&client).expect("client inserted above");
-          if state
-              .routes
-              .send_with(endpoint, target, payload, registry, tokens, |endpoint| {
-                  outbounds.open_datagram(endpoint, Arc::clone(dns))
-              })
-              .is_err()
-          {
-              return false;
-          }
-          for token in state.routes.owned_tokens() {
-              token_clients.insert(token, client);
-          }
-          true
-          '''
-          new = '''    let inserted = if !clients.contains_key(&client) {
+          fn_start = text.index('fn handle_inbound(')
+          fn_end = text.index('\nfn recv_original_datagram', fn_start)
+          body = text[fn_start:fn_end]
+          start_marker = '    if !clients.contains_key(&client) {'
+          end_marker = '    true\n}'
+          if body.count(start_marker) != 1 or body.count(end_marker) != 1:
+              raise SystemExit('unexpected handle_inbound structure; refusing to patch')
+          start = fn_start + body.index(start_marker)
+          end = fn_start + body.index(end_marker) + len('    true\n')
+          replacement = '''    let inserted = if !clients.contains_key(&client) {
               cleanup_idle_clients(clients, token_clients, Instant::now());
               if clients.len() >= MAX_CLIENTS {
                   return false;
@@ -95,9 +76,7 @@ jobs:
           }
           true
           '''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected exact block once, found {text.count(old)}')
-          path.write_text(text.replace(old, new))
+          path.write_text(text[:start] + replacement + text[end:])
           PY
           cargo fmt --all
       - name: Verify hardening
