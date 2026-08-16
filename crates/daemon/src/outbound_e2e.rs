@@ -8,10 +8,11 @@ use std::{
 
 use commeatus_core::{DestinationHost, Endpoint, EndpointId, PolicyAction, PolicyEngine, Runtime};
 use commeatus_dns::{DnsEngine, HostsTable};
+use commeatus_transport::TcpTransport;
 
 use crate::{
     config::ListenerProtocol,
-    outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol},
+    outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig},
     server::spawn_test_listener_with_runtime,
 };
 
@@ -203,7 +204,7 @@ fn registry(id: EndpointId, protocol: ProxyProtocol, address: SocketAddr) -> Arc
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
             protocol,
-            address,
+            transport: TransportConfig::Tcp(TcpTransport::new(address)),
         }])
         .unwrap(),
     )

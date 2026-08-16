@@ -1,8 +1,7 @@
 use std::{
     io,
-    net::{Shutdown, SocketAddr, TcpStream},
+    net::{SocketAddr, TcpStream},
     sync::atomic::{AtomicU64, Ordering},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -100,49 +99,6 @@ pub(crate) fn resolve_target(target: &Target, dns: &DnsEngine) -> io::Result<Vec
         ));
     }
     Ok(addresses)
-}
-
-/// Copy bytes in both directions while preserving TCP half-close semantics.
-pub fn relay(mut client: TcpStream, mut remote: TcpStream) -> io::Result<()> {
-    client.set_nodelay(true)?;
-    remote.set_nodelay(true)?;
-
-    let mut client_reader = client.try_clone()?;
-    let mut remote_writer = remote.try_clone()?;
-
-    let uplink = thread::Builder::new()
-        .name("commeatus-relay-up".to_owned())
-        .spawn(move || -> io::Result<u64> {
-            match io::copy(&mut client_reader, &mut remote_writer) {
-                Ok(copied) => {
-                    remote_writer.shutdown(Shutdown::Write)?;
-                    Ok(copied)
-                }
-                Err(error) => {
-                    let _ = client_reader.shutdown(Shutdown::Both);
-                    let _ = remote_writer.shutdown(Shutdown::Both);
-                    Err(error)
-                }
-            }
-        })?;
-
-    let downlink_result = io::copy(&mut remote, &mut client);
-    let shutdown_result = match &downlink_result {
-        Ok(_) => client.shutdown(Shutdown::Write),
-        Err(_) => {
-            let _ = client.shutdown(Shutdown::Both);
-            let _ = remote.shutdown(Shutdown::Both);
-            Ok(())
-        }
-    };
-    let uplink_result = uplink
-        .join()
-        .map_err(|_| io::Error::other("relay worker panicked"))?;
-
-    downlink_result?;
-    shutdown_result?;
-    uplink_result?;
-    Ok(())
 }
 
 #[cfg(test)]

@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    io::{self, Read, Write},
-    net::IpAddr,
-};
+use std::{collections::HashMap, io, net::IpAddr};
 
 use commeatus_core::{DestinationHost, Endpoint, EndpointId};
 use commeatus_dns::DnsEngine;
@@ -235,10 +231,7 @@ fn encode_socks_address(buffer: &mut Vec<u8>, host: &DestinationHost) -> io::Res
     Ok(())
 }
 
-fn discard_socks_address(
-    session: &mut dyn TransportSession,
-    address_type: u8,
-) -> io::Result<()> {
+fn discard_socks_address(session: &mut dyn TransportSession, address_type: u8) -> io::Result<()> {
     match address_type {
         0x01 => {
             let mut bytes = [0_u8; 4];
@@ -342,9 +335,7 @@ mod tests {
         let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id: id.clone(),
             protocol: ProxyProtocol::Socks5,
-            transport: TransportConfig::Tcp(TcpTransport::new(
-                "127.0.0.1:1081".parse().unwrap(),
-            )),
+            transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:1081".parse().unwrap())),
         }])
         .unwrap();
         let capabilities = registry.capabilities(&Endpoint::Proxy(id)).unwrap();

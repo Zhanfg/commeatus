@@ -66,7 +66,7 @@ pub fn handle(
     }
     client.set_read_timeout(None)?;
     client.set_write_timeout(None)?;
-    proxy::relay(client, remote)
+    remote.relay_to_client(client)
 }
 
 fn read_request(stream: &mut TcpStream) -> io::Result<(Target, Vec<u8>)> {
