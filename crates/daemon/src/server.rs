@@ -19,16 +19,31 @@ use crate::{
     config::{CompiledConfig, ListenerProtocol},
     http_connect,
     outbound::OutboundRegistry,
-    socks5, transparent_tcp,
+    socks5, transparent_tcp, transparent_udp,
 };
 
 const ACCEPT_ERROR_RETRY_LIMIT: usize = 8;
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 pub const MAX_ACTIVE_CONNECTIONS: usize = 256;
 
-struct BoundListener {
-    protocol: ListenerProtocol,
-    listener: TcpListener,
+enum BoundListener {
+    Tcp {
+        protocol: ListenerProtocol,
+        listener: TcpListener,
+    },
+    TproxyUdp {
+        address: SocketAddr,
+        listener: transparent_udp::TransparentUdpListener,
+    },
+}
+
+impl BoundListener {
+    fn address(&self) -> io::Result<SocketAddr> {
+        match self {
+            Self::Tcp { listener, .. } => listener.local_addr(),
+            Self::TproxyUdp { address, .. } => Ok(*address),
+        }
+    }
 }
 
 struct ConnectionLimiter {
@@ -89,16 +104,21 @@ impl Server {
     pub fn bind(config: &CompiledConfig) -> io::Result<Self> {
         let mut listeners = Vec::with_capacity(config.listeners().len());
         for listener in config.listeners() {
-            let socket = match listener.protocol {
-                ListenerProtocol::TproxyTcp => transparent_tcp::bind_listener(listener.address)?,
-                ListenerProtocol::Socks5 | ListenerProtocol::HttpConnect => {
-                    TcpListener::bind(listener.address)?
-                }
+            let bound = match listener.protocol {
+                ListenerProtocol::TproxyUdp => BoundListener::TproxyUdp {
+                    address: listener.address,
+                    listener: transparent_udp::bind_listener(listener.address)?,
+                },
+                ListenerProtocol::TproxyTcp => BoundListener::Tcp {
+                    protocol: listener.protocol,
+                    listener: transparent_tcp::bind_listener(listener.address)?,
+                },
+                ListenerProtocol::Socks5 | ListenerProtocol::HttpConnect => BoundListener::Tcp {
+                    protocol: listener.protocol,
+                    listener: TcpListener::bind(listener.address)?,
+                },
             };
-            listeners.push(BoundListener {
-                protocol: listener.protocol,
-                listener: socket,
-            });
+            listeners.push(bound);
         }
         Ok(Self {
             listeners,
@@ -118,18 +138,18 @@ impl Server {
             let outbounds = Arc::clone(&self.outbounds);
             let limiter = Arc::clone(&self.limiter);
             let tx = exit_tx.clone();
-            let address = bound.listener.local_addr()?;
+            let address = bound.address()?;
             thread::Builder::new()
                 .name(format!("commeatus-listener-{address}"))
                 .spawn(move || {
-                    let result = serve_forever(
-                        bound.listener,
-                        bound.protocol,
-                        runtime,
-                        dns,
-                        outbounds,
-                        limiter,
-                    );
+                    let result = match bound {
+                        BoundListener::Tcp { protocol, listener } => {
+                            serve_forever(listener, protocol, runtime, dns, outbounds, limiter)
+                        }
+                        BoundListener::TproxyUdp { listener, .. } => {
+                            transparent_udp::serve_forever(listener, runtime, dns, outbounds)
+                        }
+                    };
                     let _ = tx.send((address, result));
                 })?;
         }
@@ -229,6 +249,10 @@ fn handle_connection(
         ListenerProtocol::Socks5 => socks5::handle(stream, runtime, dns, outbounds),
         ListenerProtocol::HttpConnect => http_connect::handle(stream, runtime, dns, outbounds),
         ListenerProtocol::TproxyTcp => transparent_tcp::handle(stream, runtime, dns, outbounds),
+        ListenerProtocol::TproxyUdp => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "UDP listener cannot enter TCP connection dispatch",
+        )),
     }
 }
 

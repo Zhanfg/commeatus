@@ -37,6 +37,13 @@ pub enum ListenerProtocol {
     Socks5,
     HttpConnect,
     TproxyTcp,
+    TproxyUdp,
+}
+
+impl ListenerProtocol {
+    const fn is_udp(self) -> bool {
+        matches!(self, Self::TproxyUdp)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -264,7 +271,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     &fields,
                     3,
                     line_number,
-                    "listen syntax is `listen <socks5|http|tproxy-tcp> <ip:port>`",
+                    "listen syntax is `listen <socks5|http|tproxy-tcp|tproxy-udp> <ip:port>`",
                 )?;
                 if listeners.len() >= MAX_LISTENERS {
                     return Err(ConfigError::at(
@@ -276,10 +283,11 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     "socks5" => ListenerProtocol::Socks5,
                     "http" => ListenerProtocol::HttpConnect,
                     "tproxy-tcp" => ListenerProtocol::TproxyTcp,
+                    "tproxy-udp" => ListenerProtocol::TproxyUdp,
                     _ => {
                         return Err(ConfigError::at(
                             line_number,
-                            "listener protocol must be `socks5`, `http`, or `tproxy-tcp`",
+                            "listener protocol must be `socks5`, `http`, `tproxy-tcp`, or `tproxy-udp`",
                         ));
                     }
                 };
@@ -292,10 +300,10 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                         "listener port must not be zero",
                     ));
                 }
-                if !listener_addresses.insert(address) {
+                if !listener_addresses.insert((protocol.is_udp(), address)) {
                     return Err(ConfigError::at(
                         line_number,
-                        "two listeners cannot bind the same socket address",
+                        "two listeners cannot bind the same transport/socket address",
                     ));
                 }
                 listeners.push(ListenerConfig { protocol, address });

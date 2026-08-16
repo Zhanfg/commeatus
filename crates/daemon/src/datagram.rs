@@ -73,17 +73,44 @@ struct DatagramRoute {
 /// policy-selected endpoints. The route set therefore owns one execution
 /// object per endpoint instead of assuming the first datagram fixes the egress
 /// for the entire inbound association.
+#[derive(Clone, Debug)]
+pub struct DatagramTokenAllocator {
+    next_token: usize,
+}
+
+impl DatagramTokenAllocator {
+    #[must_use]
+    pub const fn new(first_token: Token) -> Self {
+        Self {
+            next_token: first_token.0,
+        }
+    }
+
+    fn allocate(&mut self, count: usize) -> io::Result<Vec<Token>> {
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "datagram execution path declared zero readiness sources",
+            ));
+        }
+        let end = self.next_token.checked_add(count).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::OutOfMemory, "datagram token space exhausted")
+        })?;
+        let tokens = (self.next_token..end).map(Token).collect::<Vec<_>>();
+        self.next_token = end;
+        Ok(tokens)
+    }
+}
+
 pub struct DatagramRouteSet {
     routes: HashMap<Endpoint, DatagramRoute>,
-    next_token: usize,
 }
 
 impl DatagramRouteSet {
     #[must_use]
-    pub fn new(first_token: Token) -> Self {
+    pub fn new() -> Self {
         Self {
             routes: HashMap::new(),
-            next_token: first_token.0,
         }
     }
 
@@ -101,6 +128,7 @@ impl DatagramRouteSet {
         target: &Target,
         payload: &[u8],
         registry: &Registry,
+        token_allocator: &mut DatagramTokenAllocator,
         open: F,
     ) -> io::Result<()>
     where
@@ -116,18 +144,8 @@ impl DatagramRouteSet {
 
             let mut execution = open(&endpoint)?;
             let source_count = execution.readiness_source_count();
-            if source_count == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "datagram execution path declared zero readiness sources",
-                ));
-            }
-            let end = self.next_token.checked_add(source_count).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::OutOfMemory, "datagram token space exhausted")
-            })?;
-            let tokens = (self.next_token..end).map(Token).collect::<Vec<_>>();
+            let tokens = token_allocator.allocate(source_count)?;
             execution.register_readiness(registry, &tokens)?;
-            self.next_token = end;
             self.routes
                 .insert(endpoint.clone(), DatagramRoute { execution, tokens });
         }
@@ -136,6 +154,14 @@ impl DatagramRouteSet {
             io::Error::other("datagram route disappeared after successful insertion")
         })?;
         route.execution.send(target, payload)
+    }
+
+    #[must_use]
+    pub fn owned_tokens(&self) -> Vec<Token> {
+        self.routes
+            .values()
+            .flat_map(|route| route.tokens.iter().copied())
+            .collect()
     }
 
     #[must_use]
@@ -555,7 +581,8 @@ mod tests {
     #[test]
     fn route_set_lazily_opens_once_per_endpoint() {
         let poll = mio::Poll::new().unwrap();
-        let mut routes = DatagramRouteSet::new(Token(8));
+        let mut allocator = DatagramTokenAllocator::new(Token(8));
+        let mut routes = DatagramRouteSet::new();
         let endpoint = Endpoint::Proxy(EndpointId::new("proxy-a").unwrap());
         let target = Target::new(DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)), 53).unwrap();
         let opens = Arc::new(AtomicUsize::new(0));
@@ -570,6 +597,7 @@ mod tests {
                     &target,
                     b"x",
                     poll.registry(),
+                    &mut allocator,
                     move |_| {
                         opens.fetch_add(1, Ordering::SeqCst);
                         Ok(Box::new(FakeExecution { sends }))
@@ -588,28 +616,43 @@ mod tests {
     #[test]
     fn route_set_rejects_unbounded_endpoint_growth() {
         let poll = mio::Poll::new().unwrap();
-        let mut routes = DatagramRouteSet::new(Token(32));
+        let mut allocator = DatagramTokenAllocator::new(Token(32));
+        let mut routes = DatagramRouteSet::new();
         let target = Target::new(DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)), 53).unwrap();
 
         for index in 0..MAX_DATAGRAM_ROUTES {
             let endpoint = Endpoint::Proxy(EndpointId::new(format!("proxy-{index}")).unwrap());
             routes
-                .send_with(endpoint, &target, b"x", poll.registry(), |_| {
-                    Ok(Box::new(FakeExecution {
-                        sends: Arc::new(AtomicUsize::new(0)),
-                    }))
-                })
+                .send_with(
+                    endpoint,
+                    &target,
+                    b"x",
+                    poll.registry(),
+                    &mut allocator,
+                    |_| {
+                        Ok(Box::new(FakeExecution {
+                            sends: Arc::new(AtomicUsize::new(0)),
+                        }))
+                    },
+                )
                 .unwrap();
         }
         assert_eq!(routes.route_count(), MAX_DATAGRAM_ROUTES);
 
         let overflow = Endpoint::Proxy(EndpointId::new("proxy-overflow").unwrap());
         let error = routes
-            .send_with(overflow, &target, b"x", poll.registry(), |_| {
-                Ok(Box::new(FakeExecution {
-                    sends: Arc::new(AtomicUsize::new(0)),
-                }))
-            })
+            .send_with(
+                overflow,
+                &target,
+                b"x",
+                poll.registry(),
+                &mut allocator,
+                |_| {
+                    Ok(Box::new(FakeExecution {
+                        sends: Arc::new(AtomicUsize::new(0)),
+                    }))
+                },
+            )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::QuotaExceeded);
         assert_eq!(routes.route_count(), MAX_DATAGRAM_ROUTES);
