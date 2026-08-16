@@ -26,8 +26,10 @@ jobs:
           components: rustfmt, clippy
       - name: Apply v0.5 release metadata
         run: |
+          python3 scripts/v05_release_prep_patch.py
           python3 scripts/v05_release_prep.py
           ! grep -R --line-number '0.4.0-alpha.1' Cargo.toml crates/*/Cargo.toml
+          ! grep -q '0.4.0-alpha.1' README.md
           grep -q '0.5.0-alpha.1' README.md
           grep -q '^## 0.5.0-alpha.1 — 2026-08-16$' CHANGELOG.md
           grep -q 'native Trojan TCP/UDP' examples/trojan-outbound.conf
@@ -70,6 +72,7 @@ jobs:
         run: |
           rm .github/workflows/v05-release-prep-once.yml
           rm scripts/v05_release_prep.py
+          rm scripts/v05_release_prep_patch.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
