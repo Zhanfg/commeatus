@@ -15,7 +15,7 @@ use mio::{
 };
 
 use crate::{
-    datagram::DatagramRouteSet,
+    datagram::{DatagramRouteSet, DatagramTokenAllocator},
     outbound::{EndpointCapabilities, OutboundRegistry},
     proxy::{self, Target},
 };
@@ -216,7 +216,8 @@ fn handle_udp_associate(
         .register(&mut control, UDP_CONTROL_TOKEN, Interest::READABLE)?;
     poll.registry()
         .register(&mut relay, UDP_CLIENT_TOKEN, Interest::READABLE)?;
-    let mut routes = DatagramRouteSet::new(UDP_OUTBOUND_FIRST_TOKEN);
+    let mut route_tokens = DatagramTokenAllocator::new(UDP_OUTBOUND_FIRST_TOKEN);
+    let mut routes = DatagramRouteSet::new();
 
     let mut events = Events::with_capacity(16);
     let mut client_address = hint
@@ -275,6 +276,7 @@ fn handle_udp_associate(
                         }
                         if handle_udp_client_packet(
                             &mut routes,
+                            &mut route_tokens,
                             poll.registry(),
                             &runtime,
                             &dns,
@@ -365,6 +367,7 @@ fn is_client_packet(source: SocketAddr, control_ip: IpAddr, client: Option<Socke
 
 fn handle_udp_client_packet(
     routes: &mut DatagramRouteSet,
+    token_allocator: &mut DatagramTokenAllocator,
     registry: &mio::Registry,
     runtime: &Runtime,
     dns: &Arc<DnsEngine>,
@@ -388,9 +391,14 @@ fn handle_udp_client_packet(
     }
 
     routes
-        .send_with(endpoint, &target, payload, registry, |endpoint| {
-            outbounds.open_datagram(endpoint, Arc::clone(dns))
-        })
+        .send_with(
+            endpoint,
+            &target,
+            payload,
+            registry,
+            token_allocator,
+            |endpoint| outbounds.open_datagram(endpoint, Arc::clone(dns)),
+        )
         .is_ok()
 }
 

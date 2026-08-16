@@ -9,6 +9,7 @@ mod proxy;
 pub mod server;
 mod socks5;
 mod transparent_tcp;
+mod transparent_udp;
 mod trojan;
 mod trojan_datagram;
 
