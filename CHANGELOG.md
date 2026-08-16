@@ -4,6 +4,58 @@ All notable changes to Commeatus are documented here.
 
 The project is pre-1.0. Native configuration and internal APIs may change between alpha releases.
 
+## 0.3.0-alpha.1 — 2026-08-16
+
+Third public alpha. This release turns policy-selected proxy endpoint identities into a real native TCP execution path while preserving the boundary between core routing decisions and protocol implementation.
+
+### Added
+
+- validated opaque `EndpointId` and `Endpoint::Proxy(EndpointId)` in the native core
+- execution-layer `OutboundRegistry` with per-endpoint capability metadata
+- native upstream SOCKS5 no-auth TCP `CONNECT` connector
+- native upstream HTTP/1.x `CONNECT` connector
+- native `endpoint <id> <socks5|http> <ip:port>` configuration
+- `proxy:<id>` route actions for rules and the default action
+- maximum 64 named proxy endpoints
+- candidate validation for duplicate or undefined proxy endpoint references
+- outbound endpoint count in CLI configuration diagnostics
+- `examples/proxy-outbound.conf`
+- real SOCKS5-inbound → named SOCKS5-outbound → echo E2E
+- real HTTP-inbound → named HTTP-outbound → echo E2E
+- `.invalid` destination E2E proving proxy-routed domains are preserved to the selected upstream proxy rather than resolved locally first
+
+### Changed
+
+- SOCKS5 and HTTP inbound handlers now consume the complete `ExecutionAction` instead of reducing every route to DIRECT
+- TCP route execution dispatches through the outbound registry
+- endpoint protocol/address/capability data remains outside `commeatus-core`
+- TCP capability is checked before connector dispatch
+- named proxy endpoint addresses are currently literal `SocketAddr` values so bootstrap-DNS semantics are not introduced implicitly
+- workspace and internal crate versions advance to `0.3.0-alpha.1`
+
+### Security and stability
+
+- a proxy endpoint that does not advertise UDP capability never silently degrades to DIRECT
+- undefined `proxy:<id>` references fail candidate configuration before active-state replacement
+- upstream proxy TCP connect and handshake operations have bounded 10-second timeouts
+- upstream HTTP response parsing stops at the header terminator and does not consume tunnel payload bytes
+- SOCKS5 upstream replies validate version, reserved byte, status and bound-address framing
+- proxy-routed domain targets remain opaque to the local direct DNS path
+- existing listener/session/resource limits remain in force
+
+### Known limitations
+
+- upstream SOCKS5/HTTP authentication is not implemented
+- proxy UDP execution is not implemented
+- no TLS transport provider yet
+- no Shadowsocks, Trojan, VLESS, Hysteria2 or TUIC
+- no endpoint groups, health selection or adaptive routing
+- no live TUN/TPROXY/eBPF interception
+- no Android KernelSU/Magisk module packaging
+- system DNS remains the only network resolver; no DoH/DoT/DoQ/Fake-IP
+- no Clash/mihomo/sing-box import/API compatibility yet
+- bounded thread-per-session remains the transitional executor
+
 ## 0.2.0-alpha.1 — 2026-08-15
 
 Second public alpha. This release expands the first TCP slice into a policy-aware TCP/UDP runtime and establishes the DNS, filtering and Android/eBPF platform boundaries required for later interception and encrypted proxy protocols.
@@ -34,7 +86,7 @@ Second public alpha. This release expands the first TCP slice into a policy-awar
 ### Changed
 
 - direct domain resolution was removed from protocol handlers and centralized in the DNS engine
-- HTTP and SOCKS5 handlers now consume one injected DNS engine owned by the compiled runtime configuration
+- HTTP and SOCKS5 handlers consume one injected DNS engine owned by the compiled runtime configuration
 - blocklist allow exceptions are filter exceptions only and never force `DIRECT`
 - compatibility source formats compile into native policy structures before runtime use
 - platform support probes distinguish `available`, `unavailable` and `unknown` instead of assuming support
