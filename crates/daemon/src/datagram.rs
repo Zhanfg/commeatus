@@ -117,13 +117,8 @@ impl DatagramRouteSet {
             let tokens = (self.next_token..end).map(Token).collect::<Vec<_>>();
             execution.register_readiness(registry, &tokens)?;
             self.next_token = end;
-            self.routes.insert(
-                endpoint.clone(),
-                DatagramRoute {
-                    execution,
-                    tokens,
-                },
-            );
+            self.routes
+                .insert(endpoint.clone(), DatagramRoute { execution, tokens });
         }
 
         self.routes
@@ -552,11 +547,7 @@ mod tests {
         let poll = mio::Poll::new().unwrap();
         let mut routes = DatagramRouteSet::new(Token(8));
         let endpoint = Endpoint::Proxy(EndpointId::new("proxy-a").unwrap());
-        let target = Target::new(
-            DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-            53,
-        )
-        .unwrap();
+        let target = Target::new(DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)), 53).unwrap();
         let opens = Arc::new(AtomicUsize::new(0));
         let sends = Arc::new(AtomicUsize::new(0));
 

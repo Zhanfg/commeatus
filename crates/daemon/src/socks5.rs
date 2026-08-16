@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use commeatus_core::{DestinationHost, Endpoint, ExecutionAction, Runtime, TransportProtocol};
+use commeatus_core::{DestinationHost, ExecutionAction, Runtime, TransportProtocol};
 use commeatus_dns::DnsEngine;
 use mio::{
     Events, Interest, Poll, Token,
@@ -15,7 +15,7 @@ use mio::{
 };
 
 use crate::{
-    datagram::{DatagramAssociation, DirectDatagramAssociation},
+    datagram::DatagramRouteSet,
     outbound::{EndpointCapabilities, OutboundRegistry},
     proxy::{self, Target},
 };
@@ -32,8 +32,7 @@ const MAX_UDP_EVENT_BURST: usize = 32;
 const MAX_PENDING_CLIENT_REPLIES: usize = 64;
 const UDP_CONTROL_TOKEN: Token = Token(0);
 const UDP_CLIENT_TOKEN: Token = Token(1);
-const UDP_DIRECT_IPV4_TOKEN: Token = Token(2);
-const UDP_DIRECT_IPV6_TOKEN: Token = Token(3);
+const UDP_OUTBOUND_FIRST_TOKEN: Token = Token(2);
 
 pub fn handle(
     mut client: TcpStream,
@@ -212,17 +211,12 @@ fn handle_udp_associate(
 
     let mut control = MioTcpStream::from_std(control);
     let mut relay = MioUdpSocket::from_std(relay);
-    let mut direct = DirectDatagramAssociation::new(Arc::clone(&dns))?;
     let mut poll = Poll::new()?;
     poll.registry()
         .register(&mut control, UDP_CONTROL_TOKEN, Interest::READABLE)?;
     poll.registry()
         .register(&mut relay, UDP_CLIENT_TOKEN, Interest::READABLE)?;
-    direct.register_readiness(
-        poll.registry(),
-        UDP_DIRECT_IPV4_TOKEN,
-        UDP_DIRECT_IPV6_TOKEN,
-    )?;
+    let mut routes = DatagramRouteSet::new(UDP_OUTBOUND_FIRST_TOKEN);
 
     let mut events = Events::with_capacity(16);
     let mut client_address = hint
@@ -266,10 +260,11 @@ fn handle_udp_associate(
         let client_writable = events
             .iter()
             .any(|event| event.token() == UDP_CLIENT_TOKEN && event.is_writable());
-        let direct_readable = events.iter().any(|event| {
-            matches!(event.token(), UDP_DIRECT_IPV4_TOKEN | UDP_DIRECT_IPV6_TOKEN)
-                && event.is_readable()
-        });
+        let outbound_readable = events
+            .iter()
+            .filter(|event| event.is_readable() && routes.owns_token(event.token()))
+            .map(|event| event.token())
+            .collect::<Vec<_>>();
 
         if client_readable {
             for _ in 0..MAX_UDP_EVENT_BURST {
@@ -279,8 +274,10 @@ fn handle_udp_associate(
                             continue;
                         }
                         if handle_udp_client_packet(
-                            &mut direct,
+                            &mut routes,
+                            poll.registry(),
                             &runtime,
+                            &dns,
                             &outbounds,
                             &client_packet[..length],
                         ) {
@@ -297,9 +294,9 @@ fn handle_udp_associate(
             }
         }
 
-        if direct_readable {
+        for token in outbound_readable {
             for _ in 0..MAX_UDP_EVENT_BURST {
-                let Some(received) = direct.receive(&mut remote_packet)? else {
+                let Some(received) = routes.receive_ready(token, &mut remote_packet)? else {
                     break;
                 };
                 let Some(client) = client_address else {
@@ -367,8 +364,10 @@ fn is_client_packet(source: SocketAddr, control_ip: IpAddr, client: Option<Socke
 }
 
 fn handle_udp_client_packet(
-    association: &mut dyn DatagramAssociation,
+    routes: &mut DatagramRouteSet,
+    registry: &mio::Registry,
     runtime: &Runtime,
+    dns: &Arc<DnsEngine>,
     outbounds: &OutboundRegistry,
     packet: &[u8],
 ) -> bool {
@@ -388,13 +387,11 @@ fn handle_udp_client_packet(
         return false;
     }
 
-    // A proxy route must never degrade to DIRECT just because no proxy
-    // datagram executor exists yet.
-    if !matches!(endpoint, Endpoint::Direct) {
-        return false;
-    }
-
-    association.send(&target, payload).is_ok()
+    routes
+        .send_with(endpoint, &target, payload, registry, |endpoint| {
+            outbounds.open_datagram(endpoint, Arc::clone(dns))
+        })
+        .is_ok()
 }
 
 fn send_or_queue_client_reply(
@@ -580,7 +577,7 @@ fn invalid_data(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use commeatus_core::DestinationHost;
+    use commeatus_core::{DestinationHost, Endpoint};
 
     use super::*;
 
