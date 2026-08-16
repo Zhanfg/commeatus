@@ -15,3 +15,4 @@ ADRs that supersede or amend earlier ones.
 - [ADR-0007: Protocol Providers Own Handshakes](0007-protocol-providers-own-handshakes.md)
 - [ADR-0008: Datagram Associations Are Logical Sessions](0008-datagram-associations-are-logical-sessions.md)
 - [ADR-0009: Outbound Registry Owns Datagram Execution](0009-outbound-registry-owns-datagram-execution.md)
+- [ADR-0010: Stream and Datagram Providers Attach Independently](0010-stream-and-datagram-providers-attach-independently.md)

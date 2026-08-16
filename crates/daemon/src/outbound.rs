@@ -8,7 +8,7 @@ use commeatus_transport::{
 };
 
 use crate::{
-    datagram::{DatagramExecution, DirectDatagramAssociation},
+    datagram::{DatagramExecution, DatagramProviderRef, DirectDatagramAssociation},
     protocol::ProtocolRef,
     proxy::{self, Target},
 };
@@ -45,6 +45,7 @@ impl TransportConfig {
 pub struct ProxyEndpointConfig {
     pub id: EndpointId,
     pub protocol: ProtocolRef,
+    pub datagram: Option<DatagramProviderRef>,
     pub transport: TransportConfig,
 }
 
@@ -129,7 +130,7 @@ impl OutboundRegistry {
                 let protocol = config.protocol.capabilities();
                 EndpointCapabilities {
                     tcp: protocol.stream_connect && transport.reliable_stream,
-                    udp: false,
+                    udp: config.datagram.is_some(),
                     encrypted_transport: transport.encrypted,
                 }
             }),
@@ -185,19 +186,22 @@ impl OutboundRegistry {
         match endpoint {
             Endpoint::Direct => Ok(Box::new(DirectDatagramAssociation::new(direct_dns)?)),
             Endpoint::Proxy(id) => {
-                if !self.endpoints.contains_key(id) {
-                    return Err(io::Error::new(
+                let config = self.endpoints.get(id).ok_or_else(|| {
+                    io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("proxy endpoint `{}` is not registered", id.as_str()),
-                    ));
-                }
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "proxy endpoint `{}` has no datagram execution provider",
-                        id.as_str()
-                    ),
-                ))
+                    )
+                })?;
+                let provider = config.datagram.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        format!(
+                            "proxy endpoint `{}` has no datagram execution provider",
+                            id.as_str()
+                        ),
+                    )
+                })?;
+                provider.open()
             }
         }
     }
@@ -205,10 +209,15 @@ impl OutboundRegistry {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use commeatus_dns::HostsTable;
 
     use super::*;
-    use crate::protocol;
+    use crate::{
+        datagram::{DatagramAssociation, OutboundDatagramProvider, ReceivedDatagram},
+        protocol,
+    };
 
     fn dns() -> Arc<DnsEngine> {
         Arc::new(DnsEngine::system(HostsTable::default()))
@@ -220,6 +229,7 @@ mod tests {
         let result = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
             protocol: protocol::trojan("secret").unwrap(),
+            datagram: None,
             transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:443".parse().unwrap())),
         }]);
         assert!(result.is_err());
@@ -231,6 +241,7 @@ mod tests {
         let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id: id.clone(),
             protocol: protocol::socks5(),
+            datagram: None,
             transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:1081".parse().unwrap())),
         }])
         .unwrap();
@@ -247,6 +258,7 @@ mod tests {
         let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id: id.clone(),
             protocol: protocol::http_connect(),
+            datagram: None,
             transport: TransportConfig::Tls(tls),
         }])
         .unwrap();
@@ -269,6 +281,7 @@ mod tests {
         let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id: id.clone(),
             protocol: protocol::socks5(),
+            datagram: None,
             transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:1081".parse().unwrap())),
         }])
         .unwrap();
@@ -277,5 +290,76 @@ mod tests {
             .err()
             .expect("proxy datagram factory unexpectedly succeeded");
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[derive(Debug)]
+    struct FakeDatagramProvider {
+        opens: Arc<AtomicUsize>,
+    }
+
+    #[derive(Debug)]
+    struct FakeDatagramExecution;
+
+    impl DatagramAssociation for FakeDatagramExecution {
+        fn send(&mut self, _target: &Target, _payload: &[u8]) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn receive(&mut self, _buffer: &mut [u8]) -> io::Result<Option<ReceivedDatagram>> {
+            Ok(None)
+        }
+    }
+
+    impl DatagramExecution for FakeDatagramExecution {
+        fn readiness_source_count(&self) -> usize {
+            1
+        }
+
+        fn register_readiness(
+            &mut self,
+            _registry: &mio::Registry,
+            tokens: &[mio::Token],
+        ) -> io::Result<()> {
+            if tokens.len() != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fake datagram execution requires one readiness token",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    impl OutboundDatagramProvider for FakeDatagramProvider {
+        fn open(&self) -> io::Result<Box<dyn DatagramExecution>> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FakeDatagramExecution))
+        }
+    }
+
+    #[test]
+    fn attached_datagram_provider_drives_capability_and_factory() {
+        let id = EndpointId::new("udp-edge").unwrap();
+        let opens = Arc::new(AtomicUsize::new(0));
+        let provider: DatagramProviderRef = Arc::new(FakeDatagramProvider {
+            opens: Arc::clone(&opens),
+        });
+        let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
+            id: id.clone(),
+            protocol: protocol::socks5(),
+            datagram: Some(provider),
+            transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:1081".parse().unwrap())),
+        }])
+        .unwrap();
+        let endpoint = Endpoint::Proxy(id);
+
+        let capabilities = registry.capabilities(&endpoint).unwrap();
+        assert!(capabilities.supports_tcp());
+        assert!(capabilities.supports_udp());
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+
+        let execution = registry.open_datagram(&endpoint, dns()).unwrap();
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        assert_eq!(execution.readiness_source_count(), 1);
     }
 }

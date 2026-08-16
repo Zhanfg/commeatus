@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    io,
+    fmt, io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket},
     sync::Arc,
 };
@@ -50,6 +50,17 @@ pub trait DatagramExecution: DatagramAssociation {
     /// caller-owned tokens.
     fn register_readiness(&mut self, registry: &Registry, tokens: &[Token]) -> io::Result<()>;
 }
+
+/// Factory owned by a proxy endpoint for opening its logical datagram path.
+///
+/// The provider captures every implementation-specific construction input.
+/// `OutboundRegistry` therefore does not need to know whether the provider
+/// uses TLS streams, native QUIC datagrams, multiplexing, or another carrier.
+pub trait OutboundDatagramProvider: fmt::Debug + Send + Sync {
+    fn open(&self) -> io::Result<Box<dyn DatagramExecution>>;
+}
+
+pub type DatagramProviderRef = Arc<dyn OutboundDatagramProvider>;
 
 struct DatagramRoute {
     execution: Box<dyn DatagramExecution>,
