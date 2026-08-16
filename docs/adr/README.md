@@ -17,3 +17,4 @@ ADRs that supersede or amend earlier ones.
 - [ADR-0009: Outbound Registry Owns Datagram Execution](0009-outbound-registry-owns-datagram-execution.md)
 - [ADR-0010: Stream and Datagram Providers Attach Independently](0010-stream-and-datagram-providers-attach-independently.md)
 - [ADR-0011: Transport Owns Framed TLS Readiness](0011-transport-owns-framed-tls-readiness.md)
+- [ADR-0012: Trojan UDP Is a Dedicated Datagram Provider](0012-trojan-udp-is-a-dedicated-datagram-provider.md)
