@@ -1,0 +1,180 @@
+name: v0.4 one-shot TLS integration
+
+on:
+  push:
+    branches:
+      - feat/v0.4-tls-transport
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v04-tls-integrate-once
+  cancel-in-progress: true
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/v0.4-tls-transport
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Integrate TLS config and tests
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          lib = Path("crates/transport/src/lib.rs")
+          text = lib.read_text()
+          needle = "mod tls;\n"
+          replacement = "mod tls;\n#[cfg(test)]\nmod tls_tests;\n"
+          if replacement not in text:
+              if needle not in text:
+                  raise SystemExit("transport tls module marker missing")
+              text = text.replace(needle, replacement, 1)
+          lib.write_text(text)
+
+          config = Path("crates/daemon/src/config.rs")
+          text = config.read_text()
+          text = text.replace(
+              "use commeatus_transport::TcpTransport;",
+              "use commeatus_transport::{TcpTransport, TlsTransport};",
+              1,
+          )
+          start_marker = '            Some("endpoint") => {'
+          end_marker = '            Some("default") => {'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit("endpoint config block markers missing")
+          block = '''            Some("endpoint") => {
+                if endpoint_configs.len() >= MAX_PROXY_ENDPOINTS {
+                    return Err(ConfigError::at(
+                        line_number,
+                        format!("proxy endpoint count exceeds {MAX_PROXY_ENDPOINTS}"),
+                    ));
+                }
+                let id = fields
+                    .get(1)
+                    .ok_or_else(|| {
+                        ConfigError::at(
+                            line_number,
+                            "endpoint syntax is `endpoint <id> <socks5|http> [tcp] <ip:port>` or `endpoint <id> <socks5|http> tls <ip:port> <server-name>`",
+                        )
+                    })?;
+                let id = EndpointId::new((*id).to_owned())
+                    .map_err(|error| ConfigError::at(line_number, error.to_string()))?;
+                if !endpoint_ids.insert(id.clone()) {
+                    return Err(ConfigError::at(line_number, "duplicate proxy endpoint id"));
+                }
+                let protocol = match fields.get(2).copied() {
+                    Some("socks5") => ProxyProtocol::Socks5,
+                    Some("http") => ProxyProtocol::HttpConnect,
+                    _ => {
+                        return Err(ConfigError::at(
+                            line_number,
+                            "endpoint protocol must be `socks5` or `http`",
+                        ));
+                    }
+                };
+
+                let (transport_name, address_value, server_name) = match fields.as_slice() {
+                    ["endpoint", _, _, address] => ("tcp", *address, None),
+                    ["endpoint", _, _, "tcp", address] => ("tcp", *address, None),
+                    ["endpoint", _, _, "tls", address, server_name] => {
+                        ("tls", *address, Some(*server_name))
+                    }
+                    _ => {
+                        return Err(ConfigError::at(
+                            line_number,
+                            "endpoint syntax is `endpoint <id> <socks5|http> [tcp] <ip:port>` or `endpoint <id> <socks5|http> tls <ip:port> <server-name>`",
+                        ));
+                    }
+                };
+                let address: SocketAddr = address_value.parse().map_err(|_| {
+                    ConfigError::at(
+                        line_number,
+                        "proxy endpoint address must be an IP socket address",
+                    )
+                })?;
+                if address.port() == 0 {
+                    return Err(ConfigError::at(
+                        line_number,
+                        "proxy endpoint port must not be zero",
+                    ));
+                }
+                let transport = match transport_name {
+                    "tcp" => TransportConfig::Tcp(TcpTransport::new(address)),
+                    "tls" => TransportConfig::Tls(
+                        TlsTransport::webpki(address, server_name.expect("TLS syntax checked"))
+                            .map_err(|error| ConfigError::at(line_number, error.to_string()))?,
+                    ),
+                    _ => unreachable!(),
+                };
+                endpoint_configs.push(ProxyEndpointConfig {
+                    id,
+                    protocol,
+                    transport,
+                });
+            }
+'''
+          text = text[:start] + block + text[end:]
+
+          marker = "    #[test]\n    fn config_size_is_bounded()"
+          pos = text.rfind(marker)
+          if pos < 0:
+              raise SystemExit("config test insertion marker missing")
+          test = '''    #[test]
+    fn explicit_tcp_and_tls_endpoint_syntax_compile() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            endpoint plain socks5 tcp 127.0.0.1:1081
+            endpoint secure http tls 127.0.0.1:8443 proxy.example
+            rule proxy:secure domain-suffix secure.example
+            default proxy:plain
+        "#;
+        let compiled = parse_config(config).unwrap();
+        assert_eq!(compiled.outbounds().len(), 2);
+        let secure = Endpoint::Proxy(EndpointId::new("secure").unwrap());
+        let capabilities = compiled.outbounds().capabilities(&secure).unwrap();
+        assert!(capabilities.supports_tcp());
+        assert!(!capabilities.supports_udp());
+        assert!(capabilities.encrypted_transport());
+    }
+
+    #[test]
+    fn invalid_tls_server_name_rejects_candidate() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            endpoint secure socks5 tls 127.0.0.1:8443 bad_name!
+            default proxy:secure
+        "#;
+        assert!(parse_config(config).is_err());
+    }
+
+'''
+          text = text[:pos] + test + text[pos:]
+          config.write_text(text)
+          PY
+
+          cargo update
+          cargo fmt --all
+          cargo check --workspace --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Commit verified integration and remove workflow
+        run: |
+          rm .github/workflows/v04-tls-integrate-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "feat(v0.4): expose TLS transport in native endpoints"
+          git push origin HEAD:feat/v0.4-tls-transport
