@@ -24,6 +24,8 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - name: Refresh lockfile for DNS test dependencies
+        run: cargo check --workspace --all-targets
       - name: Format and check
         run: |
           cargo fmt --all
