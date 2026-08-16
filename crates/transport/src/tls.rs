@@ -85,18 +85,8 @@ impl TlsTransport {
     pub fn server_name(&self) -> &ServerName<'static> {
         &self.server_name
     }
-}
 
-impl TransportConnector for TlsTransport {
-    fn capabilities(&self) -> TransportCapabilities {
-        TransportCapabilities {
-            reliable_stream: true,
-            datagram: false,
-            encrypted: true,
-        }
-    }
-
-    fn connect(&self) -> io::Result<Box<dyn TransportSession>> {
+    fn connect_established(&self) -> io::Result<(ClientConnection, TcpStream)> {
         let mut socket = TcpStream::connect_timeout(&self.address, self.connect_timeout)?;
         socket.set_nodelay(true)?;
         socket.set_read_timeout(Some(self.handshake_timeout))?;
@@ -112,7 +102,37 @@ impl TransportConnector for TlsTransport {
                 "TLS handshake did not complete",
             ));
         }
+        Ok((connection, socket))
+    }
 
+    /// Establish a verified TLS carrier that can be driven by an external
+    /// readiness loop without exposing rustls or the raw TCP socket.
+    pub fn connect_framed(&self) -> io::Result<TlsFramedSession> {
+        let (mut connection, socket) = self.connect_established()?;
+        socket.set_read_timeout(None)?;
+        socket.set_write_timeout(None)?;
+        socket.set_nonblocking(true)?;
+        connection.set_buffer_limit(Some(TLS_BUFFER_LIMIT));
+        Ok(TlsFramedSession {
+            connection,
+            remote: mio::net::TcpStream::from_std(socket),
+            registration: Registration::default(),
+            remote_eof: false,
+        })
+    }
+}
+
+impl TransportConnector for TlsTransport {
+    fn capabilities(&self) -> TransportCapabilities {
+        TransportCapabilities {
+            reliable_stream: true,
+            datagram: false,
+            encrypted: true,
+        }
+    }
+
+    fn connect(&self) -> io::Result<Box<dyn TransportSession>> {
+        let (connection, socket) = self.connect_established()?;
         Ok(Box::new(TlsTransportSession { connection, socket }))
     }
 }
@@ -120,6 +140,73 @@ impl TransportConnector for TlsTransport {
 pub struct TlsTransportSession {
     connection: ClientConnection,
     socket: TcpStream,
+}
+
+/// Verified TLS stream whose encrypted socket is owned by the transport while
+/// plaintext framing is driven by a higher-level protocol executor.
+///
+/// The caller may queue/read plaintext and ask the transport to service
+/// nonblocking TLS I/O. Dynamic interest is derived from rustls
+/// `wants_read`/`wants_write`, so writable readiness is not left enabled after
+/// encrypted output drains.
+pub struct TlsFramedSession {
+    connection: ClientConnection,
+    remote: mio::net::TcpStream,
+    registration: Registration,
+    remote_eof: bool,
+}
+
+impl TlsFramedSession {
+    pub fn write_plaintext(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.connection.writer().write(buffer)
+    }
+
+    pub fn read_plaintext(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.connection.reader().read(buffer)
+    }
+
+    /// Register the encrypted socket with the caller's poll registry.
+    pub fn register_readiness(&mut self, registry: &mio::Registry, token: Token) -> io::Result<()> {
+        if self.registration.registered {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "framed TLS session is already registered",
+            ));
+        }
+        self.refresh_readiness(registry, token)
+    }
+
+    /// Reconcile poll interest with the current rustls state.
+    pub fn refresh_readiness(&mut self, registry: &mio::Registry, token: Token) -> io::Result<()> {
+        let readable = !self.remote_eof && self.connection.wants_read();
+        let writable = self.connection.wants_write();
+        update_registration(
+            registry,
+            &mut self.remote,
+            token,
+            readable,
+            writable,
+            &mut self.registration,
+        )
+    }
+
+    /// Drive all currently possible encrypted socket I/O without blocking.
+    ///
+    /// It is safe to call this for either readable or writable readiness: each
+    /// direction stops at `WouldBlock`. A read may generate TLS control output,
+    /// so encrypted writes are attempted both before and after reads.
+    pub fn service_io(&mut self) -> io::Result<()> {
+        write_remote_tls(&mut self.connection, &mut self.remote)?;
+        if !self.remote_eof {
+            read_remote_tls(&mut self.connection, &mut self.remote, &mut self.remote_eof)?;
+        }
+        write_remote_tls(&mut self.connection, &mut self.remote)
+    }
+
+    #[must_use]
+    pub const fn remote_eof(&self) -> bool {
+        self.remote_eof
+    }
 }
 
 impl Read for TlsTransportSession {
