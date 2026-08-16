@@ -12,8 +12,9 @@ use commeatus_core::{
     RejectReason, RuleId, Runtime,
 };
 use commeatus_dns::{DnsEngine, HostsTable, MAX_HOSTS_BYTES};
+use commeatus_transport::TcpTransport;
 
-use crate::outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol};
+use crate::outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig};
 
 pub const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 pub const MAX_RULES: usize = 4096;
@@ -313,7 +314,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 endpoint_configs.push(ProxyEndpointConfig {
                     id,
                     protocol,
-                    address,
+                    transport: TransportConfig::Tcp(TcpTransport::new(address)),
                 });
             }
             Some("default") => {

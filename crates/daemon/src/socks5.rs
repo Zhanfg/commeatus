@@ -68,7 +68,7 @@ fn handle_connect(
     write_reply(&mut client, 0x00, remote.local_addr().ok())?;
     client.set_read_timeout(None)?;
     client.set_write_timeout(None)?;
-    proxy::relay(client, remote)
+    remote.relay_to_client(client)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
