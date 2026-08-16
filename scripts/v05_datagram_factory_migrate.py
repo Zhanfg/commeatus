@@ -176,6 +176,10 @@ replace_once(
 }
 ''',
 )
+replace_once(
+    "mod tests {\n    use commeatus_core::DestinationHost;",
+    "mod tests {\n    use commeatus_core::{DestinationHost, Endpoint};",
+)
 
 for forbidden in (
     "DirectDatagramAssociation",
