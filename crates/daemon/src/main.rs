@@ -35,8 +35,9 @@ fn run_cli() -> Result<(), String> {
                 .sum();
             let hosts_records: usize = compiled.hosts().iter().map(|hosts| hosts.records).sum();
             println!(
-                "configuration valid: {} listener(s), {} blocklist(s), {} compiled blocklist entry/entries, {} hosts file(s), {} hosts record name(s)",
+                "configuration valid: {} listener(s), {} outbound endpoint(s), {} blocklist(s), {} compiled blocklist entry/entries, {} hosts file(s), {} hosts record name(s)",
                 compiled.listeners().len(),
+                compiled.outbounds().len(),
                 compiled.blocklists().len(),
                 block_entries,
                 compiled.hosts().len(),
@@ -65,6 +66,10 @@ fn run_cli() -> Result<(), String> {
                     hosts.records
                 );
             }
+            eprintln!(
+                "commeatus: {} named proxy outbound endpoint(s) compiled",
+                compiled.outbounds().len()
+            );
             for listener in compiled.listeners() {
                 eprintln!(
                     "commeatus: listening {:?} on {}",
