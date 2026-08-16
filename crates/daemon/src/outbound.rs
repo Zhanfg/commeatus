@@ -8,7 +8,7 @@ use commeatus_transport::{
 };
 
 use crate::{
-    datagram::{DatagramExecution, DirectDatagramAssociation},
+    datagram::{DatagramExecution, DatagramProviderRef, DirectDatagramAssociation},
     protocol::ProtocolRef,
     proxy::{self, Target},
 };
@@ -45,6 +45,7 @@ impl TransportConfig {
 pub struct ProxyEndpointConfig {
     pub id: EndpointId,
     pub protocol: ProtocolRef,
+    pub datagram: Option<DatagramProviderRef>,
     pub transport: TransportConfig,
 }
 
@@ -129,7 +130,7 @@ impl OutboundRegistry {
                 let protocol = config.protocol.capabilities();
                 EndpointCapabilities {
                     tcp: protocol.stream_connect && transport.reliable_stream,
-                    udp: false,
+                    udp: config.datagram.is_some(),
                     encrypted_transport: transport.encrypted,
                 }
             }),
@@ -185,19 +186,22 @@ impl OutboundRegistry {
         match endpoint {
             Endpoint::Direct => Ok(Box::new(DirectDatagramAssociation::new(direct_dns)?)),
             Endpoint::Proxy(id) => {
-                if !self.endpoints.contains_key(id) {
-                    return Err(io::Error::new(
+                let config = self.endpoints.get(id).ok_or_else(|| {
+                    io::Error::new(
                         io::ErrorKind::NotFound,
                         format!("proxy endpoint `{}` is not registered", id.as_str()),
-                    ));
-                }
-                Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "proxy endpoint `{}` has no datagram execution provider",
-                        id.as_str()
-                    ),
-                ))
+                    )
+                })?;
+                let provider = config.datagram.as_ref().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        format!(
+                            "proxy endpoint `{}` has no datagram execution provider",
+                            id.as_str()
+                        ),
+                    )
+                })?;
+                provider.open()
             }
         }
     }
@@ -220,6 +224,7 @@ mod tests {
         let result = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
             protocol: protocol::trojan("secret").unwrap(),
+            datagram: None,
             transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:443".parse().unwrap())),
         }]);
         assert!(result.is_err());
@@ -231,6 +236,7 @@ mod tests {
         let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id: id.clone(),
             protocol: protocol::socks5(),
+            datagram: None,
             transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:1081".parse().unwrap())),
         }])
         .unwrap();
@@ -247,6 +253,7 @@ mod tests {
         let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id: id.clone(),
             protocol: protocol::http_connect(),
+            datagram: None,
             transport: TransportConfig::Tls(tls),
         }])
         .unwrap();
@@ -269,6 +276,7 @@ mod tests {
         let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
             id: id.clone(),
             protocol: protocol::socks5(),
+            datagram: None,
             transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:1081".parse().unwrap())),
         }])
         .unwrap();

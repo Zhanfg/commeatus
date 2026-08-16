@@ -218,6 +218,7 @@ fn http_inbound_routes_native_trojan_over_verified_tls_without_local_dns() {
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
             protocol: protocol::trojan(PASSWORD).unwrap(),
+            datagram: None,
             transport: TransportConfig::Tls(transport),
         }])
         .unwrap(),

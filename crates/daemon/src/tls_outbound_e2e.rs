@@ -198,6 +198,7 @@ fn http_inbound_routes_socks_protocol_over_tls_without_local_dns() {
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
             protocol: protocol::socks5(),
+            datagram: None,
             transport: TransportConfig::Tls(transport),
         }])
         .unwrap(),

@@ -360,6 +360,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 endpoint_configs.push(ProxyEndpointConfig {
                     id,
                     protocol,
+                    datagram: None,
                     transport,
                 });
             }

@@ -205,6 +205,7 @@ fn registry(id: EndpointId, protocol: ProtocolRef, address: SocketAddr) -> Arc<O
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
             protocol,
+            datagram: None,
             transport: TransportConfig::Tcp(TcpTransport::new(address)),
         }])
         .unwrap(),
