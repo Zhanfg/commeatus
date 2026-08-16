@@ -4,6 +4,58 @@ All notable changes to Commeatus are documented here.
 
 The project is pre-1.0. Native configuration and internal APIs may change between alpha releases.
 
+## 0.5.0-alpha.1 — 2026-08-16
+
+Fifth public alpha. This release establishes provider-owned protocol/datagram execution and ships native Trojan TCP and UDP over verified, readiness-driven TLS.
+
+### Added
+
+- protocol-provider boundary for native stream handshakes and capabilities
+- native Trojan CONNECT over verified TLS
+- shared, redacted `TrojanVerifier` and Trojan address/wire primitives
+- logical `DatagramAssociation` / `DatagramExecution` boundary
+- outbound-owned `DatagramRouteSet` with bounded, endpoint-lazy sessions
+- independent optional datagram-provider attachment on proxy endpoints
+- readiness-driven `TlsFramedSession` for framed protocols over verified TLS
+- native Trojan UDP ASSOCIATE and per-datagram IPv4/IPv6/domain framing
+- bounded Trojan UDP pending-frame, pending-byte and receive buffers
+- ADR-0006 through ADR-0012 covering Trojan, provider, datagram and framed-TLS ownership
+- `examples/trojan-outbound.conf`
+- full native Trojan TCP E2E
+- full SOCKS5 UDP → Trojan UDP → verified TLS E2E, including `.invalid` domain preservation, split/coalesced frames and zero-length UDP
+
+### Changed
+
+- `OutboundRegistry` no longer owns a central stream-protocol enum switch
+- native Trojan endpoints advertise UDP only because a real datagram provider is attached
+- raw Trojan passwords are converted once at configuration compilation and shared as verifier state between stream/datagram providers
+- SOCKS5 UDP no longer hard-codes DIRECT datagram construction
+- one UDP ASSOCIATE can lazily maintain multiple policy-selected outbound endpoint routes within a hard route limit
+- outbound route readiness dispatch accepts any readiness event owned by the route, allowing TLS ciphertext flush without Trojan-specific SOCKS5 branches
+- the previous fixed 500 ms SOCKS5 UDP control polling path is removed
+
+### Security and stability
+
+- proxy-selected UDP domains remain opaque to local DIRECT DNS and are carried to Trojan upstream unchanged
+- unsupported proxy UDP continues to fail locally and never falls back to DIRECT
+- Trojan verifier Debug output is redacted
+- malformed or oversized Trojan UDP state fails the affected path rather than panicking the process
+- framed TLS keeps certificate/SNI verification and encrypted-socket ownership inside `commeatus-transport`
+- writable readiness is transient instead of permanently registered
+- Trojan UDP queues/RX state and per-association route growth are explicitly bounded
+- Rust 1.85, Android arm64, eBPF, release packaging and full E2E remain CI gates
+
+### Known limitations
+
+- no Shadowsocks, VLESS, Hysteria2 or TUIC
+- no endpoint groups, health selection or adaptive routing
+- no DoH/DoT/DoQ/Fake-IP
+- no live TUN/TPROXY/eBPF interception
+- no KernelSU/Magisk packaging
+- no compatibility import/API facade
+- no shared/multiplexed Trojan UDP carrier pooling
+- bounded thread-per-session remains the transitional global TCP executor
+
 ## 0.4.0-alpha.1 — 2026-08-16
 
 Fourth public alpha. This release establishes a reusable transport-session layer and adds verified native TLS beneath existing outbound proxy protocols.
