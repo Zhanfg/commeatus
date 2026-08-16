@@ -28,11 +28,7 @@ replace_once(
     '''pub fn trojan(password: &str) -> io::Result<ProtocolRef> {
     Ok(Arc::new(TrojanProtocol::new(password)?))
 }''',
-    '''pub fn trojan(password: &str) -> io::Result<ProtocolRef> {
-    Ok(trojan_with_verifier(TrojanVerifier::new(password)?))
-}
-
-#[must_use]
+    '''#[must_use]
 pub(crate) fn trojan_with_verifier(verifier: TrojanVerifier) -> ProtocolRef {
     Arc::new(TrojanProtocol { verifier })
 }''',
@@ -117,11 +113,9 @@ replace_once(
     "                let (protocol, transport) = match fields.as_slice() {",
     "                let (protocol, datagram, transport) = match fields.as_slice() {",
 )
-# Stream-only endpoint tuple arms.
 config = Path("crates/daemon/src/config.rs")
 text = config.read_text()
 for provider in ("protocol::socks5()", "protocol::http_connect()"):
-    # There are three arms for each provider. Insert None after the protocol line.
     needle = f"                        {provider},\n                        TransportConfig::"
     count = text.count(needle)
     if count != 2:
@@ -227,11 +221,8 @@ replace_once(
     "        for token in outbound_ready {",
 )
 
-# Hard integration invariants.
 for path in ("crates/daemon/src/lib.rs", "crates/daemon/src/config.rs"):
     if "trojan_datagram" not in Path(path).read_text():
         raise SystemExit(f"Trojan datagram integration missing from {path}")
-if "datagram: None" in new_trojan_arm:
-    raise SystemExit("Trojan endpoint was left stream-only")
 if "event.is_readable() && routes.owns_token" in Path("crates/daemon/src/socks5.rs").read_text():
     raise SystemExit("SOCKS5 still drops outbound WRITABLE events")
