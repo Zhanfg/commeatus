@@ -8,4 +8,4 @@ repository.workspace = true
 description = "Compatibility boundary for existing proxy ecosystems"
 
 [dependencies]
-commeatus-core = { path = "../core", version = "=0.5.0-alpha.1" }
+commeatus-core = { path = "../core", version = "=0.6.0-alpha.1" }

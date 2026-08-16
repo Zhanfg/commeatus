@@ -1,4 +1,4 @@
-name: Publish v0.5 alpha
+name: Publish v0.6 alpha
 
 on:
   push:
@@ -9,23 +9,26 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: publish-v0.6-alpha
+  cancel-in-progress: false
+
 jobs:
   release:
-    name: Build and publish v0.5.0-alpha.1
+    name: Build and publish v0.6.0-alpha.1
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Determine v0.5 release state
+      - name: Determine v0.6 release state
         id: release_state
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
-          test -n "$version"
+          test "$version" = "0.6.0-alpha.1"
           tag="v$version"
-          test "$tag" = "v0.5.0-alpha.1"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if gh release view "$tag" >/dev/null 2>&1; then
@@ -44,6 +47,10 @@ jobs:
         if: steps.release_state.outputs.publish == 'true'
         run: |
           cargo fmt --all -- --check
+          if grep -R --line-number --include='*.rs' 'ProxyProtocol' crates; then
+            echo 'central ProxyProtocol enum/reference is forbidden; add a provider instead' >&2
+            exit 1
+          fi
           cargo check --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
@@ -72,16 +79,34 @@ jobs:
           readelf -SW build/ebpf/flow.bpf.o | grep -q 'cgroup/connect4'
           readelf -SW build/ebpf/flow.bpf.o | grep -q 'cgroup/connect6'
           readelf -SW build/ebpf/flow.bpf.o | grep -q 'license'
-      - name: Build Linux x86_64
+      - name: Build Linux x86_64 and smoke configuration
         if: steps.release_state.outputs.publish == 'true'
         run: |
           cargo build --release --locked -p commeatus
-          ./target/release/commeatus version | grep -q '0.5.0-alpha.1'
+          ./target/release/commeatus version | grep -q '0.6.0-alpha.1'
           ./target/release/commeatus platform
           ./target/release/commeatus check --config examples/commeatus.conf
           ./target/release/commeatus check --config examples/proxy-outbound.conf
           ./target/release/commeatus check --config examples/tls-proxy-outbound.conf
           ./target/release/commeatus check --config examples/trojan-outbound.conf
+          ./target/release/commeatus check --config examples/dot-resolver.conf
+          ./target/release/commeatus check --config examples/android-root-tproxy-tcp.conf
+          ./target/release/commeatus check --config examples/android-root-tproxy.conf
+          sh -n scripts/android-root-tproxy-tcp.sh
+          sh -n scripts/android-root-tproxy.sh
+      - name: Privileged transparent listener smoke
+        if: steps.release_state.outputs.publish == 'true'
+        run: |
+          sudo env PATH="$PATH" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+            "$(command -v cargo)" test -p commeatus transparent_tcp::tests::privileged_transparent_bind_smoke --locked -- --ignored --exact
+          sudo env PATH="$PATH" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+            "$(command -v cargo)" test -p commeatus transparent_udp::tests::privileged_reply_socket_preserves_nonlocal_source_bind --locked -- --ignored --exact
+      - name: TPROXY TCP namespace release E2E
+        if: steps.release_state.outputs.publish == 'true'
+        run: sudo bash scripts/ci/tproxy-tcp-netns-e2e.sh ./target/release/commeatus
+      - name: TPROXY UDP namespace release E2E
+        if: steps.release_state.outputs.publish == 'true'
+        run: sudo bash scripts/ci/tproxy-udp-netns-e2e.sh ./target/release/commeatus
       - name: Configure Android NDK toolchain
         if: steps.release_state.outputs.publish == 'true'
         run: |
@@ -91,8 +116,9 @@ jobs:
         if: steps.release_state.outputs.publish == 'true'
         run: |
           cargo build --release --locked -p commeatus --target aarch64-linux-android
+          file target/aarch64-linux-android/release/commeatus
           file target/aarch64-linux-android/release/commeatus | grep -q 'ARM aarch64'
-      - name: Package release artifacts
+      - name: Package and verify release artifacts
         if: steps.release_state.outputs.publish == 'true'
         run: |
           bash scripts/package-alpha.sh \
@@ -100,6 +126,10 @@ jobs:
             "$GITHUB_SHA" \
             "$ANDROID_NDK_LATEST_HOME"
           (cd dist && sha256sum -c SHA256SUMS)
+          tar -tzf "dist/commeatus-${{ steps.release_state.outputs.version }}-linux-x86_64.tar.gz" \
+            "commeatus-${{ steps.release_state.outputs.version }}-linux-x86_64/commeatus" >/dev/null
+          tar -tzf "dist/commeatus-${{ steps.release_state.outputs.version }}-android-arm64.tar.gz" \
+            "commeatus-${{ steps.release_state.outputs.version }}-android-arm64/commeatus" >/dev/null
       - name: Publish GitHub prerelease and tag exact commit
         if: steps.release_state.outputs.publish == 'true'
         env:
@@ -115,4 +145,4 @@ jobs:
             --target "$GITHUB_SHA" \
             --prerelease \
             --title "Commeatus $RELEASE_TAG" \
-            --notes-file docs/releases/0.5.0-alpha.1.md
+            --notes-file docs/releases/0.6.0-alpha.1.md

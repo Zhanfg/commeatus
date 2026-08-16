@@ -267,7 +267,7 @@ fn handle_inbound(
         return false;
     }
 
-    if !clients.contains_key(&client) {
+    let inserted = if !clients.contains_key(&client) {
         cleanup_idle_clients(clients, token_clients, Instant::now());
         if clients.len() >= MAX_CLIENTS {
             return false;
@@ -279,18 +279,30 @@ fn handle_inbound(
                 last_activity: Instant::now(),
             },
         );
-    }
+        true
+    } else {
+        false
+    };
 
-    let state = clients.get_mut(&client).expect("client inserted above");
-    if state
-        .routes
-        .send_with(endpoint, target, payload, registry, tokens, |endpoint| {
-            outbounds.open_datagram(endpoint, Arc::clone(dns))
-        })
-        .is_err()
-    {
+    let send_result = match clients.get_mut(&client) {
+        Some(state) => {
+            state
+                .routes
+                .send_with(endpoint, target, payload, registry, tokens, |endpoint| {
+                    outbounds.open_datagram(endpoint, Arc::clone(dns))
+                })
+        }
+        None => return false,
+    };
+    if send_result.is_err() {
+        if inserted {
+            clients.remove(&client);
+        }
         return false;
     }
+    let Some(state) = clients.get(&client) else {
+        return false;
+    };
     for token in state.routes.owned_tokens() {
         token_clients.insert(token, client);
     }

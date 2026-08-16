@@ -4,7 +4,7 @@ Commeatus is a Rust proxy core and runtime built around a flow-centric policy mo
 
 The name comes from Latin *commeatus*: passage, free movement, traffic, and a route through which movement can occur.
 
-> **Status:** current `main` is **v0.6 development**; the latest public prerelease is `v0.5.0-alpha.1`. The tree remains experimental, not a production-ready replacement for mihomo or sing-box. Current main adds explicit verified DNS-over-TLS resolver chains on top of the v0.5 TCP/UDP, policy, Trojan, Android arm64, and eBPF prototype baseline.
+> **Status:** current tree targets **v0.6.0-alpha.1**. Commeatus remains experimental, not a production-ready replacement for mihomo or sing-box. This alpha combines the existing TCP/UDP and native Trojan baseline with verified DNS-over-TLS plus Android Root/Linux TPROXY TCP and UDP ingress.
 
 ## Project priorities
 
