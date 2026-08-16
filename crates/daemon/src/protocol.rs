@@ -1,14 +1,13 @@
 use std::{fmt, io, net::IpAddr, sync::Arc};
 
+use crate::{
+    proxy::Target,
+    trojan::{TrojanVerifier, encode_connect_request},
+};
 use commeatus_core::DestinationHost;
 use commeatus_transport::TransportSession;
-use sha2::{Digest, Sha224};
-
-use crate::proxy::Target;
 
 const MAX_HTTP_RESPONSE_HEAD: usize = 16 * 1024;
-const MAX_TROJAN_PASSWORD_BYTES: usize = 1024;
-const TROJAN_PASSWORD_HASH_BYTES: usize = 56;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProtocolCapabilities {
@@ -40,8 +39,9 @@ pub fn http_connect() -> ProtocolRef {
     Arc::new(HttpConnectProtocol)
 }
 
-pub fn trojan(password: &str) -> io::Result<ProtocolRef> {
-    Ok(Arc::new(TrojanProtocol::new(password)?))
+#[must_use]
+pub(crate) fn trojan_with_verifier(verifier: TrojanVerifier) -> ProtocolRef {
+    Arc::new(TrojanProtocol { verifier })
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -173,27 +173,7 @@ impl OutboundProtocol for HttpConnectProtocol {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TrojanProtocol {
-    password_hash: [u8; TROJAN_PASSWORD_HASH_BYTES],
-}
-
-impl TrojanProtocol {
-    fn new(password: &str) -> io::Result<Self> {
-        if password.is_empty() || password.len() > MAX_TROJAN_PASSWORD_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Trojan password must contain 1..={MAX_TROJAN_PASSWORD_BYTES} UTF-8 bytes"),
-            ));
-        }
-
-        let digest = Sha224::digest(password.as_bytes());
-        let mut password_hash = [0_u8; TROJAN_PASSWORD_HASH_BYTES];
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        for (index, byte) in digest.iter().copied().enumerate() {
-            password_hash[index * 2] = HEX[usize::from(byte >> 4)];
-            password_hash[index * 2 + 1] = HEX[usize::from(byte & 0x0f)];
-        }
-        Ok(Self { password_hash })
-    }
+    verifier: TrojanVerifier,
 }
 
 impl OutboundProtocol for TrojanProtocol {
@@ -213,13 +193,7 @@ impl OutboundProtocol for TrojanProtocol {
         session: &mut dyn TransportSession,
         target: &Target,
     ) -> io::Result<()> {
-        let mut request = Vec::with_capacity(TROJAN_PASSWORD_HASH_BYTES + 2 + 1 + 1 + 253 + 2 + 2);
-        request.extend_from_slice(&self.password_hash);
-        request.extend_from_slice(b"\r\n");
-        request.push(0x01); // CONNECT
-        encode_socks_address(&mut request, &target.host)?;
-        request.extend_from_slice(&target.port.to_be_bytes());
-        request.extend_from_slice(b"\r\n");
+        let request = encode_connect_request(&self.verifier, target)?;
         session.write_all(&request)?;
         session.flush()
     }
@@ -310,15 +284,9 @@ mod tests {
     fn provider_names_are_stable_native_identifiers() {
         assert_eq!(socks5().name(), "socks5");
         assert_eq!(http_connect().name(), "http-connect");
-        assert_eq!(trojan("secret").unwrap().name(), "trojan");
-    }
-
-    #[test]
-    fn trojan_password_hash_matches_sha224_hex_vector() {
-        let protocol = TrojanProtocol::new("password").unwrap();
         assert_eq!(
-            &protocol.password_hash,
-            b"d63dc919e201d7bc4c825630d2cf25fdc93d4b2f0d46706d29038d01"
+            trojan_with_verifier(TrojanVerifier::new("secret").unwrap()).name(),
+            "trojan"
         );
     }
 
@@ -326,7 +294,11 @@ mod tests {
     fn transport_requirements_are_provider_capabilities() {
         assert!(!socks5().capabilities().requires_tls);
         assert!(!http_connect().capabilities().requires_tls);
-        assert!(trojan("secret").unwrap().capabilities().requires_tls);
+        assert!(
+            trojan_with_verifier(TrojanVerifier::new("secret").unwrap())
+                .capabilities()
+                .requires_tls
+        );
     }
 
     #[test]

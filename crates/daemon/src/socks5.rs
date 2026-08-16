@@ -260,9 +260,9 @@ fn handle_udp_associate(
         let client_writable = events
             .iter()
             .any(|event| event.token() == UDP_CLIENT_TOKEN && event.is_writable());
-        let outbound_readable = events
+        let outbound_ready = events
             .iter()
-            .filter(|event| event.is_readable() && routes.owns_token(event.token()))
+            .filter(|event| routes.owns_token(event.token()))
             .map(|event| event.token())
             .collect::<Vec<_>>();
 
@@ -294,7 +294,7 @@ fn handle_udp_associate(
             }
         }
 
-        for token in outbound_readable {
+        for token in outbound_ready {
             for _ in 0..MAX_UDP_EVENT_BURST {
                 let Some(received) = routes.receive_ready(token, &mut remote_packet)? else {
                     break;

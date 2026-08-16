@@ -217,7 +217,9 @@ fn http_inbound_routes_native_trojan_over_verified_tls_without_local_dns() {
     let outbounds = Arc::new(
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
-            protocol: protocol::trojan(PASSWORD).unwrap(),
+            protocol: protocol::trojan_with_verifier(
+                crate::trojan::TrojanVerifier::new(PASSWORD).unwrap(),
+            ),
             datagram: None,
             transport: TransportConfig::Tls(transport),
         }])

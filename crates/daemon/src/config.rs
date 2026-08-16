@@ -17,6 +17,8 @@ use commeatus_transport::{TcpTransport, TlsTransport};
 use crate::{
     outbound::{OutboundRegistry, ProxyEndpointConfig, TransportConfig},
     protocol,
+    trojan::TrojanVerifier,
+    trojan_datagram::TrojanDatagramProvider,
 };
 
 pub const MAX_CONFIG_BYTES: usize = 1024 * 1024;
@@ -293,9 +295,10 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     return Err(ConfigError::at(line_number, "duplicate proxy endpoint id"));
                 }
 
-                let (protocol, transport) = match fields.as_slice() {
+                let (protocol, datagram, transport) = match fields.as_slice() {
                     ["endpoint", _, "socks5", address] => (
                         protocol::socks5(),
+                        None,
                         TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
                             address,
                             line_number,
@@ -303,6 +306,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     ),
                     ["endpoint", _, "http", address] => (
                         protocol::http_connect(),
+                        None,
                         TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
                             address,
                             line_number,
@@ -310,6 +314,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     ),
                     ["endpoint", _, "socks5", "tcp", address] => (
                         protocol::socks5(),
+                        None,
                         TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
                             address,
                             line_number,
@@ -317,6 +322,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     ),
                     ["endpoint", _, "http", "tcp", address] => (
                         protocol::http_connect(),
+                        None,
                         TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
                             address,
                             line_number,
@@ -324,10 +330,12 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     ),
                     ["endpoint", _, "socks5", "tls", address, server_name] => (
                         protocol::socks5(),
+                        None,
                         parse_tls_transport(address, server_name, line_number)?,
                     ),
                     ["endpoint", _, "http", "tls", address, server_name] => (
                         protocol::http_connect(),
+                        None,
                         parse_tls_transport(address, server_name, line_number)?,
                     ),
                     [
@@ -338,11 +346,16 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                         address,
                         server_name,
                         password,
-                    ] => (
-                        protocol::trojan(password)
-                            .map_err(|error| ConfigError::at(line_number, error.to_string()))?,
-                        parse_tls_transport(address, server_name, line_number)?,
-                    ),
+                    ] => {
+                        let verifier = TrojanVerifier::new(password)
+                            .map_err(|error| ConfigError::at(line_number, error.to_string()))?;
+                        let tls = parse_tls_transport_raw(address, server_name, line_number)?;
+                        (
+                            protocol::trojan_with_verifier(verifier.clone()),
+                            Some(TrojanDatagramProvider::new(verifier, tls.clone()).into_ref()),
+                            TransportConfig::Tls(tls),
+                        )
+                    }
                     ["endpoint", _, "trojan", ..] => {
                         return Err(ConfigError::at(
                             line_number,
@@ -360,7 +373,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 endpoint_configs.push(ProxyEndpointConfig {
                     id,
                     protocol,
-                    datagram: None,
+                    datagram,
                     transport,
                 });
             }
@@ -596,15 +609,22 @@ fn parse_proxy_address(value: &str, line: usize) -> Result<SocketAddr, ConfigErr
     Ok(address)
 }
 
+fn parse_tls_transport_raw(
+    address: &str,
+    server_name: &str,
+    line: usize,
+) -> Result<TlsTransport, ConfigError> {
+    let address = parse_proxy_address(address, line)?;
+    TlsTransport::webpki(address, server_name)
+        .map_err(|error| ConfigError::at(line, error.to_string()))
+}
+
 fn parse_tls_transport(
     address: &str,
     server_name: &str,
     line: usize,
 ) -> Result<TransportConfig, ConfigError> {
-    let address = parse_proxy_address(address, line)?;
-    TlsTransport::webpki(address, server_name)
-        .map(TransportConfig::Tls)
-        .map_err(|error| ConfigError::at(line, error.to_string()))
+    parse_tls_transport_raw(address, server_name, line).map(TransportConfig::Tls)
 }
 
 fn expect_fields(
@@ -968,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn trojan_tls_endpoint_compiles_as_encrypted_tcp_only() {
+    fn trojan_tls_endpoint_compiles_with_stream_and_datagram_capability() {
         let config = r#"
             version 1
             listen socks5 127.0.0.1:1080
@@ -980,7 +1000,7 @@ mod tests {
         let endpoint = Endpoint::Proxy(EndpointId::new("secure").unwrap());
         let capabilities = compiled.outbounds().capabilities(&endpoint).unwrap();
         assert!(capabilities.supports_tcp());
-        assert!(!capabilities.supports_udp());
+        assert!(capabilities.supports_udp());
         assert!(capabilities.encrypted_transport());
     }
 

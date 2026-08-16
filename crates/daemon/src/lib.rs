@@ -8,6 +8,8 @@ mod protocol;
 mod proxy;
 pub mod server;
 mod socks5;
+mod trojan;
+mod trojan_datagram;
 
 pub use config::{CompiledConfig, ConfigError, ConfigStore, ListenerConfig, ListenerProtocol};
 pub use server::Server;
@@ -20,3 +22,5 @@ mod outbound_e2e;
 mod tls_outbound_e2e;
 #[cfg(test)]
 mod trojan_outbound_e2e;
+#[cfg(test)]
+mod trojan_udp_e2e;
