@@ -1,17 +1,18 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket},
     sync::Arc,
 };
 
-use commeatus_core::DestinationHost;
+use commeatus_core::{DestinationHost, Endpoint};
 use commeatus_dns::DnsEngine;
 use mio::{Interest, Registry, Token, net::UdpSocket};
 
 use crate::proxy::{self, Target};
 
 pub const MAX_DATAGRAM_REMOTE_PEERS: usize = 256;
+pub const MAX_DATAGRAM_ROUTES: usize = 32;
 const MAX_UNTRUSTED_DRAIN_PER_RECEIVE: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,6 +34,130 @@ pub trait DatagramAssociation: Send {
     /// association. Nonblocking implementations return `Ok(None)` when no
     /// trusted datagram is currently ready.
     fn receive(&mut self, buffer: &mut [u8]) -> io::Result<Option<ReceivedDatagram>>;
+}
+
+/// Executor-facing readiness adapter for a logical datagram association.
+///
+/// Readiness is deliberately a second trait instead of being part of
+/// `DatagramAssociation`: protocol semantics stay carrier-agnostic while the
+/// daemon can still drive DIRECT sockets, stream-framed proxy sessions or
+/// future QUIC event sources without periodic polling.
+pub trait DatagramExecution: DatagramAssociation {
+    /// Number of readiness tokens required by this concrete execution path.
+    fn readiness_source_count(&self) -> usize;
+
+    /// Register all concrete event sources using exactly `tokens.len()`
+    /// caller-owned tokens.
+    fn register_readiness(&mut self, registry: &Registry, tokens: &[Token]) -> io::Result<()>;
+}
+
+struct DatagramRoute {
+    execution: Box<dyn DatagramExecution>,
+    tokens: Vec<Token>,
+}
+
+/// Per-inbound-association set of lazily opened outbound datagram routes.
+///
+/// One SOCKS5 UDP ASSOCIATE may send different targets through different
+/// policy-selected endpoints. The route set therefore owns one execution
+/// object per endpoint instead of assuming the first datagram fixes the egress
+/// for the entire inbound association.
+pub struct DatagramRouteSet {
+    routes: HashMap<Endpoint, DatagramRoute>,
+    next_token: usize,
+}
+
+impl DatagramRouteSet {
+    #[must_use]
+    pub fn new(first_token: Token) -> Self {
+        Self {
+            routes: HashMap::new(),
+            next_token: first_token.0,
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    fn route_count(&self) -> usize {
+        self.routes.len()
+    }
+
+    /// Send through the route selected for `endpoint`, opening and registering
+    /// it only on first use.
+    pub fn send_with<F>(
+        &mut self,
+        endpoint: Endpoint,
+        target: &Target,
+        payload: &[u8],
+        registry: &Registry,
+        open: F,
+    ) -> io::Result<()>
+    where
+        F: FnOnce(&Endpoint) -> io::Result<Box<dyn DatagramExecution>>,
+    {
+        if !self.routes.contains_key(&endpoint) {
+            if self.routes.len() >= MAX_DATAGRAM_ROUTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::QuotaExceeded,
+                    format!("datagram route limit {MAX_DATAGRAM_ROUTES} reached"),
+                ));
+            }
+
+            let mut execution = open(&endpoint)?;
+            let source_count = execution.readiness_source_count();
+            if source_count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "datagram execution path declared zero readiness sources",
+                ));
+            }
+            let end = self.next_token.checked_add(source_count).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::OutOfMemory, "datagram token space exhausted")
+            })?;
+            let tokens = (self.next_token..end).map(Token).collect::<Vec<_>>();
+            execution.register_readiness(registry, &tokens)?;
+            self.next_token = end;
+            self.routes.insert(
+                endpoint.clone(),
+                DatagramRoute {
+                    execution,
+                    tokens,
+                },
+            );
+        }
+
+        self.routes
+            .get_mut(&endpoint)
+            .expect("datagram route was inserted or already existed")
+            .execution
+            .send(target, payload)
+    }
+
+    #[must_use]
+    pub fn owns_token(&self, token: Token) -> bool {
+        self.routes
+            .values()
+            .any(|route| route.tokens.contains(&token))
+    }
+
+    /// Receive from the route that owns `token`.
+    ///
+    /// Unknown tokens return `Ok(None)` so the caller can share one poll set
+    /// with TCP-control and inbound-relay tokens.
+    pub fn receive_ready(
+        &mut self,
+        token: Token,
+        buffer: &mut [u8],
+    ) -> io::Result<Option<ReceivedDatagram>> {
+        let Some(route) = self
+            .routes
+            .values_mut()
+            .find(|route| route.tokens.contains(&token))
+        else {
+            return Ok(None);
+        };
+        route.execution.receive(buffer)
+    }
 }
 
 /// DIRECT datagram execution.
@@ -69,23 +194,6 @@ impl DirectDatagramAssociation {
             ipv6,
             remote_peers: HashSet::new(),
         })
-    }
-
-    /// Register DIRECT carrier sockets with an executor-owned poll registry.
-    ///
-    /// Readiness is intentionally not part of `DatagramAssociation`: other
-    /// protocol/carrier combinations may expose very different event sources.
-    pub fn register_readiness(
-        &mut self,
-        registry: &Registry,
-        ipv4_token: Token,
-        ipv6_token: Token,
-    ) -> io::Result<()> {
-        registry.register(&mut self.ipv4, ipv4_token, Interest::READABLE)?;
-        if let Some(ipv6) = &mut self.ipv6 {
-            registry.register(ipv6, ipv6_token, Interest::READABLE)?;
-        }
-        Ok(())
     }
 
     #[cfg(test)]
@@ -203,14 +311,43 @@ impl DatagramAssociation for DirectDatagramAssociation {
     }
 }
 
+impl DatagramExecution for DirectDatagramAssociation {
+    fn readiness_source_count(&self) -> usize {
+        1 + usize::from(self.ipv6.is_some())
+    }
+
+    fn register_readiness(&mut self, registry: &Registry, tokens: &[Token]) -> io::Result<()> {
+        let expected = self.readiness_source_count();
+        if tokens.len() != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "DIRECT datagram execution requires {expected} readiness tokens, got {}",
+                    tokens.len()
+                ),
+            ));
+        }
+        registry.register(&mut self.ipv4, tokens[0], Interest::READABLE)?;
+        if let Some(ipv6) = &mut self.ipv6 {
+            registry.register(ipv6, tokens[1], Interest::READABLE)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         net::{IpAddr, UdpSocket},
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
         thread,
         time::{Duration, Instant},
     };
 
+    use commeatus_core::EndpointId;
     use commeatus_dns::HostsTable;
 
     use super::*;
@@ -376,5 +513,74 @@ mod tests {
             DestinationHost::Ip(remote_address.ip())
         );
         remote_thread.join().unwrap();
+    }
+
+    #[derive(Debug)]
+    struct FakeExecution {
+        sends: Arc<AtomicUsize>,
+    }
+
+    impl DatagramAssociation for FakeExecution {
+        fn send(&mut self, _target: &Target, _payload: &[u8]) -> io::Result<()> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn receive(&mut self, _buffer: &mut [u8]) -> io::Result<Option<ReceivedDatagram>> {
+            Ok(None)
+        }
+    }
+
+    impl DatagramExecution for FakeExecution {
+        fn readiness_source_count(&self) -> usize {
+            1
+        }
+
+        fn register_readiness(&mut self, _registry: &Registry, tokens: &[Token]) -> io::Result<()> {
+            if tokens.len() != 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "fake execution requires one token",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn route_set_lazily_opens_once_per_endpoint() {
+        let poll = mio::Poll::new().unwrap();
+        let mut routes = DatagramRouteSet::new(Token(8));
+        let endpoint = Endpoint::Proxy(EndpointId::new("proxy-a").unwrap());
+        let target = Target::new(
+            DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            53,
+        )
+        .unwrap();
+        let opens = Arc::new(AtomicUsize::new(0));
+        let sends = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..2 {
+            let opens = Arc::clone(&opens);
+            let sends = Arc::clone(&sends);
+            routes
+                .send_with(
+                    endpoint.clone(),
+                    &target,
+                    b"x",
+                    poll.registry(),
+                    move |_| {
+                        opens.fetch_add(1, Ordering::SeqCst);
+                        Ok(Box::new(FakeExecution { sends }))
+                    },
+                )
+                .unwrap();
+        }
+
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+        assert_eq!(sends.load(Ordering::SeqCst), 2);
+        assert_eq!(routes.route_count(), 1);
+        assert!(routes.owns_token(Token(8)));
+        assert!(!routes.owns_token(Token(9)));
     }
 }
