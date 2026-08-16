@@ -8,6 +8,7 @@ mod protocol;
 mod proxy;
 pub mod server;
 mod socks5;
+mod transparent_tcp;
 mod trojan;
 mod trojan_datagram;
 

@@ -36,6 +36,7 @@ pub const MAX_DNS_RESOLVERS: usize = 8;
 pub enum ListenerProtocol {
     Socks5,
     HttpConnect,
+    TproxyTcp,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -263,7 +264,7 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                     &fields,
                     3,
                     line_number,
-                    "listen syntax is `listen <socks5|http> <ip:port>`",
+                    "listen syntax is `listen <socks5|http|tproxy-tcp> <ip:port>`",
                 )?;
                 if listeners.len() >= MAX_LISTENERS {
                     return Err(ConfigError::at(
@@ -274,10 +275,11 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 let protocol = match fields[1] {
                     "socks5" => ListenerProtocol::Socks5,
                     "http" => ListenerProtocol::HttpConnect,
+                    "tproxy-tcp" => ListenerProtocol::TproxyTcp,
                     _ => {
                         return Err(ConfigError::at(
                             line_number,
-                            "listener protocol must be `socks5` or `http`",
+                            "listener protocol must be `socks5`, `http`, or `tproxy-tcp`",
                         ));
                     }
                 };

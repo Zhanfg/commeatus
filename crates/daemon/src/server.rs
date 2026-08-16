@@ -19,7 +19,7 @@ use crate::{
     config::{CompiledConfig, ListenerProtocol},
     http_connect,
     outbound::OutboundRegistry,
-    socks5,
+    socks5, transparent_tcp,
 };
 
 const ACCEPT_ERROR_RETRY_LIMIT: usize = 8;
@@ -89,7 +89,12 @@ impl Server {
     pub fn bind(config: &CompiledConfig) -> io::Result<Self> {
         let mut listeners = Vec::with_capacity(config.listeners().len());
         for listener in config.listeners() {
-            let socket = TcpListener::bind(listener.address)?;
+            let socket = match listener.protocol {
+                ListenerProtocol::TproxyTcp => transparent_tcp::bind_listener(listener.address)?,
+                ListenerProtocol::Socks5 | ListenerProtocol::HttpConnect => {
+                    TcpListener::bind(listener.address)?
+                }
+            };
             listeners.push(BoundListener {
                 protocol: listener.protocol,
                 listener: socket,
@@ -223,6 +228,7 @@ fn handle_connection(
     match protocol {
         ListenerProtocol::Socks5 => socks5::handle(stream, runtime, dns, outbounds),
         ListenerProtocol::HttpConnect => http_connect::handle(stream, runtime, dns, outbounds),
+        ListenerProtocol::TproxyTcp => transparent_tcp::handle(stream, runtime, dns, outbounds),
     }
 }
 

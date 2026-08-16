@@ -15,6 +15,7 @@ commeatus-compat = { path = "../compat", version = "=0.5.0-alpha.1" }
 commeatus-platform = { path = "../platform", version = "=0.5.0-alpha.1" }
 mio = { version = "1", features = ["net", "os-poll"] }
 sha2 = "0.10"
+socket2 = { version = "=0.6.5", features = ["all"] }
 
 [dev-dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
