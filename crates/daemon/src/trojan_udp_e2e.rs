@@ -21,9 +21,7 @@ use crate::{
     protocol,
     proxy::Target,
     server::spawn_test_listener_with_runtime,
-    trojan::{
-        TROJAN_VERIFIER_BYTES, TrojanVerifier, encode_udp_frame, parse_udp_frame,
-    },
+    trojan::{TROJAN_VERIFIER_BYTES, TrojanVerifier, encode_udp_frame, parse_udp_frame},
     trojan_datagram::TrojanDatagramProvider,
 };
 
@@ -161,26 +159,21 @@ fn spawn_trojan_udp_server(
             // acceptable test shutdown because the daemon owns the client
             // side lifetime.
             let mut drain = [0_u8; 64];
-            loop {
-                match tls.read(&mut drain) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        return Err(io::Error::other(
-                            "unexpected extra Trojan UDP client plaintext",
-                        ));
-                    }
-                    Err(error)
-                        if matches!(
-                            error.kind(),
-                            io::ErrorKind::UnexpectedEof
-                                | io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::BrokenPipe
-                        ) =>
-                    {
-                        break;
-                    }
-                    Err(error) => return Err(error),
+            match tls.read(&mut drain) {
+                Ok(0) => {}
+                Ok(_) => {
+                    return Err(io::Error::other(
+                        "unexpected extra Trojan UDP client plaintext",
+                    ));
                 }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::UnexpectedEof
+                            | io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::BrokenPipe
+                    ) => {}
+                Err(error) => return Err(error),
             }
             Ok(observed)
         })
