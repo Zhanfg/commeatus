@@ -6,15 +6,49 @@ use commeatus_transport::{
     TcpTransport, TcpTransportSession, TlsTransport, TransportCapabilities, TransportConnector,
     TransportSession,
 };
+use sha2::{Digest, Sha224};
 
 use crate::proxy::{self, Target};
 
 const MAX_HTTP_RESPONSE_HEAD: usize = 16 * 1024;
+const MAX_TROJAN_PASSWORD_BYTES: usize = 1024;
+const TROJAN_PASSWORD_HASH_BYTES: usize = 56;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrojanProtocol {
+    password_hash: [u8; TROJAN_PASSWORD_HASH_BYTES],
+}
+
+impl TrojanProtocol {
+    pub fn new(password: &str) -> io::Result<Self> {
+        if password.is_empty() || password.len() > MAX_TROJAN_PASSWORD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Trojan password must contain 1..={MAX_TROJAN_PASSWORD_BYTES} UTF-8 bytes"),
+            ));
+        }
+
+        let digest = Sha224::digest(password.as_bytes());
+        let mut password_hash = [0_u8; TROJAN_PASSWORD_HASH_BYTES];
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for (index, byte) in digest.iter().copied().enumerate() {
+            password_hash[index * 2] = HEX[usize::from(byte >> 4)];
+            password_hash[index * 2 + 1] = HEX[usize::from(byte & 0x0f)];
+        }
+        Ok(Self { password_hash })
+    }
+
+    #[cfg(test)]
+    fn password_hash(&self) -> &[u8; TROJAN_PASSWORD_HASH_BYTES] {
+        &self.password_hash
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProxyProtocol {
     Socks5,
     HttpConnect,
+    Trojan(TrojanProtocol),
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +64,11 @@ impl TransportConfig {
             Self::Tcp(transport) => transport.capabilities(),
             Self::Tls(transport) => transport.capabilities(),
         }
+    }
+
+    #[must_use]
+    fn is_tls(&self) -> bool {
+        matches!(self, Self::Tls(_))
     }
 
     fn connect(&self) -> io::Result<Box<dyn TransportSession>> {
@@ -80,6 +119,18 @@ impl OutboundRegistry {
     pub fn new(endpoints: Vec<ProxyEndpointConfig>) -> Result<Self, io::Error> {
         let mut registry = HashMap::with_capacity(endpoints.len());
         for endpoint in endpoints {
+            if matches!(&endpoint.protocol, ProxyProtocol::Trojan(_))
+                && !endpoint.transport.is_tls()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Trojan endpoint `{}` requires a TLS transport",
+                        endpoint.id.as_str()
+                    ),
+                ));
+            }
+
             let id = endpoint.id.clone();
             if registry.insert(id.clone(), endpoint).is_some() {
                 return Err(io::Error::new(
@@ -114,8 +165,8 @@ impl OutboundRegistry {
             Endpoint::Proxy(id) => self.endpoints.get(id).map(|config| {
                 let transport = config.transport.capabilities();
                 let protocol_supports_stream = matches!(
-                    config.protocol,
-                    ProxyProtocol::Socks5 | ProxyProtocol::HttpConnect
+                    &config.protocol,
+                    ProxyProtocol::Socks5 | ProxyProtocol::HttpConnect | ProxyProtocol::Trojan(_)
                 );
                 EndpointCapabilities {
                     tcp: protocol_supports_stream && transport.reliable_stream,
@@ -155,14 +206,33 @@ impl OutboundRegistry {
                     )
                 })?;
                 let mut session = config.transport.connect()?;
-                match config.protocol {
+                match &config.protocol {
                     ProxyProtocol::Socks5 => handshake_socks5(session.as_mut(), target)?,
                     ProxyProtocol::HttpConnect => handshake_http(session.as_mut(), target)?,
+                    ProxyProtocol::Trojan(protocol) => {
+                        handshake_trojan(session.as_mut(), target, protocol)?;
+                    }
                 }
                 Ok(session)
             }
         }
     }
+}
+
+fn handshake_trojan(
+    session: &mut dyn TransportSession,
+    target: &Target,
+    protocol: &TrojanProtocol,
+) -> io::Result<()> {
+    let mut request = Vec::with_capacity(TROJAN_PASSWORD_HASH_BYTES + 2 + 1 + 1 + 253 + 2 + 2);
+    request.extend_from_slice(&protocol.password_hash);
+    request.extend_from_slice(b"\r\n");
+    request.push(0x01); // CONNECT
+    encode_socks_address(&mut request, &target.host)?;
+    request.extend_from_slice(&target.port.to_be_bytes());
+    request.extend_from_slice(b"\r\n");
+    session.write_all(&request)?;
+    session.flush()
 }
 
 fn handshake_socks5(session: &mut dyn TransportSession, target: &Target) -> io::Result<()> {
@@ -332,6 +402,26 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
+
+    #[test]
+    fn trojan_password_hash_matches_sha224_hex_vector() {
+        let protocol = TrojanProtocol::new("password").unwrap();
+        assert_eq!(
+            protocol.password_hash(),
+            b"d63dc919e201d7bc4c825630d2cf25fdc93d4b2f0d46706d29038d01"
+        );
+    }
+
+    #[test]
+    fn trojan_rejects_plain_tcp_transport() {
+        let id = EndpointId::new("trojan").unwrap();
+        let result = OutboundRegistry::new(vec![ProxyEndpointConfig {
+            id,
+            protocol: ProxyProtocol::Trojan(TrojanProtocol::new("secret").unwrap()),
+            transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:443".parse().unwrap())),
+        }]);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn proxy_endpoint_capabilities_are_derived_from_transport() {

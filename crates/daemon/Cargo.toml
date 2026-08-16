@@ -13,6 +13,7 @@ commeatus-dns = { path = "../dns", version = "=0.4.0-alpha.1" }
 commeatus-transport = { path = "../transport", version = "=0.4.0-alpha.1" }
 commeatus-compat = { path = "../compat", version = "=0.4.0-alpha.1" }
 commeatus-platform = { path = "../platform", version = "=0.4.0-alpha.1" }
+sha2 = "0.10"
 
 [dev-dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
