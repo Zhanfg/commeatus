@@ -13,3 +13,4 @@ ADRs that supersede or amend earlier ones.
 - [ADR-0005: TLS Is a Verified Transport](0005-tls-is-a-verified-transport.md)
 - [ADR-0006: Trojan Is a Protocol over Verified TLS](0006-trojan-is-a-protocol-over-tls.md)
 - [ADR-0007: Protocol Providers Own Handshakes](0007-protocol-providers-own-handshakes.md)
+- [ADR-0008: Datagram Associations Are Logical Sessions](0008-datagram-associations-are-logical-sessions.md)
