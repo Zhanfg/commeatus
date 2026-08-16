@@ -13,6 +13,10 @@ def replace_once(old: str, new: str) -> None:
 
 
 replace_once(
+    "use commeatus_core::{DestinationHost, Endpoint, ExecutionAction, Runtime, TransportProtocol};",
+    "use commeatus_core::{DestinationHost, ExecutionAction, Runtime, TransportProtocol};",
+)
+replace_once(
     "    datagram::{DatagramAssociation, DirectDatagramAssociation},",
     "    datagram::DatagramRouteSet,",
 )
