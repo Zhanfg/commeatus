@@ -39,6 +39,8 @@ jobs:
           ./target/release/commeatus version
           ./target/release/commeatus platform
           ./target/release/commeatus check --config examples/commeatus.conf
+          ./target/release/commeatus check --config examples/proxy-outbound.conf
+          ./target/release/commeatus check --config examples/tls-proxy-outbound.conf
 
   msrv:
     name: MSRV 1.85
@@ -92,13 +94,10 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-linux-android
-      - name: Configure Android NDK linker
+      - name: Configure Android NDK toolchain
         run: |
           test -n "$ANDROID_NDK_LATEST_HOME"
-          linker="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-          test -x "$linker"
-          echo "Using NDK: $ANDROID_NDK_LATEST_HOME"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$linker" >> "$GITHUB_ENV"
+          bash scripts/android-ndk-env.sh "$ANDROID_NDK_LATEST_HOME" 29 >> "$GITHUB_ENV"
       - name: Build Android arm64
         run: cargo build --release --locked -p commeatus --target aarch64-linux-android
       - name: Verify Android binary
@@ -115,12 +114,10 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-linux-android
-      - name: Configure Android NDK linker
+      - name: Configure Android NDK toolchain
         run: |
           test -n "$ANDROID_NDK_LATEST_HOME"
-          linker="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
-          test -x "$linker"
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$linker" >> "$GITHUB_ENV"
+          bash scripts/android-ndk-env.sh "$ANDROID_NDK_LATEST_HOME" 29 >> "$GITHUB_ENV"
       - name: Build release binaries
         run: |
           cargo build --release --locked -p commeatus
