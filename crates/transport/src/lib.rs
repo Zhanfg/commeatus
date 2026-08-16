@@ -7,12 +7,16 @@
 
 #![forbid(unsafe_code)]
 
+mod tls;
+
 use std::{
     io::{self, Read, Write},
     net::{Shutdown, SocketAddr, TcpStream},
     thread,
     time::Duration,
 };
+
+pub use tls::{TlsTransport, TlsTransportSession};
 
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
