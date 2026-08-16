@@ -12,3 +12,4 @@ ADRs that supersede or amend earlier ones.
 - [ADR-0004: Transport Owns Session Relay](0004-transport-owns-session-relay.md)
 - [ADR-0005: TLS Is a Verified Transport](0005-tls-is-a-verified-transport.md)
 - [ADR-0006: Trojan Is a Protocol over Verified TLS](0006-trojan-is-a-protocol-over-tls.md)
+- [ADR-0007: Protocol Providers Own Handshakes](0007-protocol-providers-own-handshakes.md)
