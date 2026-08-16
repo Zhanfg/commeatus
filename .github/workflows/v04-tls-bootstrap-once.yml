@@ -1,0 +1,42 @@
+name: v0.4 one-shot TLS bootstrap
+
+on:
+  push:
+    branches:
+      - feat/v0.4-tls-transport
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v04-tls-bootstrap-once
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/v0.4-tls-transport
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Resolve TLS dependency graph and verify source
+        run: |
+          cargo update
+          cargo fmt --all
+          cargo check --workspace --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Commit verified lockfile and formatting
+        run: |
+          rm .github/workflows/v04-tls-bootstrap-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "build(v0.4): lock verified TLS transport dependencies"
+          git push origin HEAD:feat/v0.4-tls-transport
