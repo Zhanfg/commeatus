@@ -24,7 +24,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - name: Integrate shared wire and provider, verify stable
+      - name: Apply Trojan UDP integration
         run: |
           python3 scripts/v05_trojan_udp_wire.py
           python3 scripts/v05_trojan_udp_test_migrate.py
@@ -33,9 +33,13 @@ jobs:
           grep -q 'let outbound_ready' crates/daemon/src/socks5.rs
           ! grep -R --line-number 'protocol::trojan(' crates/daemon/src --include='*.rs'
           cargo fmt --all
-          cargo check --workspace --all-targets --locked
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo test --workspace --locked
+          cargo fmt --all -- --check
+      - name: Check stable
+        run: cargo check --workspace --all-targets --locked
+      - name: Clippy stable
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test stable
+        run: cargo test --workspace --locked
       - name: Verify Rust 1.85 all-targets
         run: |
           rustup toolchain install 1.85.0 --profile minimal --no-self-update
