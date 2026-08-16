@@ -22,58 +22,60 @@ jobs:
           changelog = Path('CHANGELOG.md')
           text = changelog.read_text()
           marker = 'The project is pre-1.0. Native configuration and internal APIs may change between alpha releases.\n\n'
-          block = '''## 0.6.0-alpha.1 — 2026-08-17
-
-Sixth public alpha. This release adds verified DNS-over-TLS and turns the Android Root interception preview into a native TCP+UDP TPROXY path that still executes through the ordinary flow/policy/outbound runtime.
-
-### Added
-
-- typed DNS answer metadata and explicit secure resolver-chain semantics
-- persistent verified DNS-over-TLS resolver and `examples/dot-resolver.conf`
-- native `listen tproxy-tcp` transparent TCP ingress
-- native `listen tproxy-udp` transparent UDP ingress
-- IPv4/IPv6 original-destination recovery for transparent UDP through safe `nix` ancillary wrappers
-- source-correct transparent UDP replies from the exact original remote `IP:port`
-- listener-wide datagram readiness-token allocation for multiple transparent clients
-- combined Android Root TCP+UDP lifecycle helper and configuration example
-- privileged TCP and UDP TPROXY bind/namespace E2E in GitHub Actions
-- ADR-0013 through ADR-0016 for DNS and transparent-interception ownership
-
-### Changed
-
-- TPROXY is treated strictly as an ingress adapter; transparent traffic uses the same native `FlowContext -> Policy -> ExecutionPlan -> OutboundRegistry` path as explicit proxy inbounds
-- transparent UDP can execute DIRECT or any attached native datagram provider, including Trojan UDP, without protocol-name branches in the listener
-- secure DNS fallback must be explicit rather than silently degrading to an insecure resolver
-- workspace and internal crate versions advance to `0.6.0-alpha.1`
-
-### Security and stability
-
-- unsupported proxy UDP still fails locally and never falls back to DIRECT
-- transparent UDP client count, route count, reply-socket cache, event drain and idle lifetime are bounded
-- a newly observed transparent UDP client is rolled back immediately when its first outbound send fails instead of consuming a slot until idle expiry
-- the new-client transition no longer relies on a production `expect()`
-- root interception bypasses the root-owned daemon to avoid self-looping
-- Android Root helper cleanup is scoped to Commeatus-owned chains and policy routes
-- verified TLS/DoT certificate and server-name validation remains mandatory
-- Rust 1.85, Android arm64, eBPF, release packaging and privileged TCP+UDP TPROXY proofs are release gates
-
-### Known limitations
-
-- no TUN backend yet
-- eBPF remains a compile-verified prototype; no live loader/maps/redirect path yet
-- no KernelSU/Magisk module packaging
-- no Shadowsocks, VLESS, Hysteria2 or TUIC
-- no endpoint groups, health selection, load balancing or adaptive/Smart routing
-- no DoH, DoQ or Fake-IP
-- no Clash/mihomo/sing-box import or compatible API
-- bounded thread-per-session remains the transitional global TCP executor
-
-'''
+          lines = [
+              '## 0.6.0-alpha.1 — 2026-08-17',
+              '',
+              'Sixth public alpha. This release adds verified DNS-over-TLS and turns the Android Root interception preview into a native TCP+UDP TPROXY path that still executes through the ordinary flow/policy/outbound runtime.',
+              '',
+              '### Added',
+              '',
+              '- typed DNS answer metadata and explicit secure resolver-chain semantics',
+              '- persistent verified DNS-over-TLS resolver and `examples/dot-resolver.conf`',
+              '- native `listen tproxy-tcp` transparent TCP ingress',
+              '- native `listen tproxy-udp` transparent UDP ingress',
+              '- IPv4/IPv6 original-destination recovery for transparent UDP through safe `nix` ancillary wrappers',
+              '- source-correct transparent UDP replies from the exact original remote `IP:port`',
+              '- listener-wide datagram readiness-token allocation for multiple transparent clients',
+              '- combined Android Root TCP+UDP lifecycle helper and configuration example',
+              '- privileged TCP and UDP TPROXY bind/namespace E2E in GitHub Actions',
+              '- ADR-0013 through ADR-0016 for DNS and transparent-interception ownership',
+              '',
+              '### Changed',
+              '',
+              '- TPROXY is treated strictly as an ingress adapter; transparent traffic uses the same native `FlowContext -> Policy -> ExecutionPlan -> OutboundRegistry` path as explicit proxy inbounds',
+              '- transparent UDP can execute DIRECT or any attached native datagram provider, including Trojan UDP, without protocol-name branches in the listener',
+              '- secure DNS fallback must be explicit rather than silently degrading to an insecure resolver',
+              '- workspace and internal crate versions advance to `0.6.0-alpha.1`',
+              '',
+              '### Security and stability',
+              '',
+              '- unsupported proxy UDP still fails locally and never falls back to DIRECT',
+              '- transparent UDP client count, route count, reply-socket cache, event drain and idle lifetime are bounded',
+              '- a newly observed transparent UDP client is rolled back immediately when its first outbound send fails instead of consuming a slot until idle expiry',
+              '- the new-client transition no longer relies on a production `expect()`',
+              '- root interception bypasses the root-owned daemon to avoid self-looping',
+              '- Android Root helper cleanup is scoped to Commeatus-owned chains and policy routes',
+              '- verified TLS/DoT certificate and server-name validation remains mandatory',
+              '- Rust 1.85, Android arm64, eBPF, release packaging and privileged TCP+UDP TPROXY proofs are release gates',
+              '',
+              '### Known limitations',
+              '',
+              '- no TUN backend yet',
+              '- eBPF remains a compile-verified prototype; no live loader/maps/redirect path yet',
+              '- no KernelSU/Magisk module packaging',
+              '- no Shadowsocks, VLESS, Hysteria2 or TUIC',
+              '- no endpoint groups, health selection, load balancing or adaptive/Smart routing',
+              '- no DoH, DoQ or Fake-IP',
+              '- no Clash/mihomo/sing-box import or compatible API',
+              '- bounded thread-per-session remains the transitional global TCP executor',
+              '',
+              '',
+          ]
+          block = '\n'.join(lines)
           if '## 0.6.0-alpha.1 — 2026-08-17' not in text:
               if text.count(marker) != 1:
                   raise SystemExit('unexpected changelog preamble')
-              text = text.replace(marker, marker + block)
-              changelog.write_text(text)
+              changelog.write_text(text.replace(marker, marker + block))
 
           readme = Path('README.md')
           rtext = readme.read_text()
