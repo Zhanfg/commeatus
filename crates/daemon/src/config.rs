@@ -8,16 +8,19 @@ use std::{
 
 use commeatus_compat::{BlocklistStats, MAX_BLOCKLIST_BYTES, compile_blocklist};
 use commeatus_core::{
-    Endpoint, IpCidr, Matcher, PolicyAction, PolicyEngine, PolicyRule, PolicyTier, RejectReason,
-    RuleId, Runtime,
+    Endpoint, EndpointId, IpCidr, Matcher, PolicyAction, PolicyEngine, PolicyRule, PolicyTier,
+    RejectReason, RuleId, Runtime,
 };
 use commeatus_dns::{DnsEngine, HostsTable, MAX_HOSTS_BYTES};
+
+use crate::outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol};
 
 pub const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 pub const MAX_RULES: usize = 4096;
 pub const MAX_LISTENERS: usize = 16;
 pub const MAX_BLOCKLISTS: usize = 8;
 pub const MAX_HOSTS_FILES: usize = 4;
+pub const MAX_PROXY_ENDPOINTS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ListenerProtocol {
@@ -50,6 +53,7 @@ pub struct CompiledConfig {
     hosts: Vec<HostsSummary>,
     runtime: Runtime,
     dns: Arc<DnsEngine>,
+    outbounds: Arc<OutboundRegistry>,
 }
 
 impl CompiledConfig {
@@ -76,6 +80,11 @@ impl CompiledConfig {
     #[must_use]
     pub fn dns(&self) -> &Arc<DnsEngine> {
         &self.dns
+    }
+
+    #[must_use]
+    pub fn outbounds(&self) -> &Arc<OutboundRegistry> {
+        &self.outbounds
     }
 }
 
@@ -114,9 +123,9 @@ impl std::error::Error for ConfigError {}
 
 /// Active configuration with candidate-then-swap semantics.
 ///
-/// Referenced blocklist and DNS hosts assets are fully read and compiled before
-/// the candidate replaces the active snapshot. A failed candidate therefore
-/// leaves the Last Known Good runtime and DNS engine untouched.
+/// Referenced assets and named outbound endpoints are fully parsed and compiled
+/// before a candidate replaces the active snapshot. A failed candidate therefore
+/// leaves the Last Known Good policy, DNS engine, and outbound registry untouched.
 pub struct ConfigStore {
     active: RwLock<Arc<CompiledConfig>>,
     asset_root: PathBuf,
@@ -173,6 +182,9 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
     let mut hosts = Vec::new();
     let mut hosts_paths = HashSet::new();
     let mut hosts_table = HostsTable::default();
+    let mut endpoint_configs = Vec::new();
+    let mut endpoint_ids = HashSet::new();
+    let mut referenced_endpoints = HashSet::new();
     let mut rules = Vec::new();
     let mut next_rule_id = 1_u64;
 
@@ -258,17 +270,67 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 }
                 listeners.push(ListenerConfig { protocol, address });
             }
+            Some("endpoint") => {
+                expect_fields(
+                    &fields,
+                    4,
+                    line_number,
+                    "endpoint syntax is `endpoint <id> <socks5|http> <ip:port>`",
+                )?;
+                if endpoint_configs.len() >= MAX_PROXY_ENDPOINTS {
+                    return Err(ConfigError::at(
+                        line_number,
+                        format!("proxy endpoint count exceeds {MAX_PROXY_ENDPOINTS}"),
+                    ));
+                }
+                let id = EndpointId::new(fields[1].to_owned())
+                    .map_err(|error| ConfigError::at(line_number, error.to_string()))?;
+                if !endpoint_ids.insert(id.clone()) {
+                    return Err(ConfigError::at(line_number, "duplicate proxy endpoint id"));
+                }
+                let protocol = match fields[2] {
+                    "socks5" => ProxyProtocol::Socks5,
+                    "http" => ProxyProtocol::HttpConnect,
+                    _ => {
+                        return Err(ConfigError::at(
+                            line_number,
+                            "endpoint protocol must be `socks5` or `http`",
+                        ));
+                    }
+                };
+                let address: SocketAddr = fields[3].parse().map_err(|_| {
+                    ConfigError::at(
+                        line_number,
+                        "proxy endpoint address must currently be an IP socket address",
+                    )
+                })?;
+                if address.port() == 0 {
+                    return Err(ConfigError::at(
+                        line_number,
+                        "proxy endpoint port must not be zero",
+                    ));
+                }
+                endpoint_configs.push(ProxyEndpointConfig {
+                    id,
+                    protocol,
+                    address,
+                });
+            }
             Some("default") => {
                 expect_fields(
                     &fields,
                     2,
                     line_number,
-                    "default syntax is `default <direct|reject>`",
+                    "default syntax is `default <direct|reject|proxy:id>`",
                 )?;
                 if default_action.is_some() {
                     return Err(ConfigError::at(line_number, "duplicate default directive"));
                 }
-                default_action = Some(parse_action(fields[1], line_number)?);
+                let parsed = parse_action(fields[1], line_number)?;
+                if let Some(id) = &parsed.proxy_ref {
+                    referenced_endpoints.insert(id.clone());
+                }
+                default_action = Some(parsed.action);
             }
             Some("blocklist") => {
                 expect_fields(
@@ -328,7 +390,11 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
             }
             Some("rule") => {
                 ensure_rule_capacity(rules.len(), line_number)?;
-                rules.push(parse_rule(&fields, line_number, next_rule_id)?);
+                let parsed = parse_rule(&fields, line_number, next_rule_id)?;
+                if let Some(id) = &parsed.proxy_ref {
+                    referenced_endpoints.insert(id.clone());
+                }
+                rules.push(parsed.rule);
                 next_rule_id += 1;
             }
             Some(other) => {
@@ -358,6 +424,16 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
     }
     let default_action =
         default_action.ok_or_else(|| ConfigError::global("missing default action"))?;
+    let outbounds = OutboundRegistry::new(endpoint_configs)
+        .map_err(|error| ConfigError::global(error.to_string()))?;
+    for id in &referenced_endpoints {
+        if !outbounds.contains(id) {
+            return Err(ConfigError::global(format!(
+                "policy references undefined proxy endpoint `{}`",
+                id.as_str()
+            )));
+        }
+    }
 
     Ok(CompiledConfig {
         listeners,
@@ -365,6 +441,97 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
         hosts,
         runtime: Runtime::new(PolicyEngine::new(rules, default_action)),
         dns: Arc::new(DnsEngine::system(hosts_table)),
+        outbounds: Arc::new(outbounds),
+    })
+}
+
+struct ParsedAction {
+    action: PolicyAction,
+    proxy_ref: Option<EndpointId>,
+}
+
+fn parse_action(value: &str, line: usize) -> Result<ParsedAction, ConfigError> {
+    let (action, proxy_ref) = match value {
+        "direct" => (PolicyAction::Route(Endpoint::Direct), None),
+        "reject" => (PolicyAction::Reject(RejectReason::Policy), None),
+        _ => {
+            let value = value.strip_prefix("proxy:").ok_or_else(|| {
+                ConfigError::at(line, "action must be `direct`, `reject`, or `proxy:<id>`")
+            })?;
+            let id = EndpointId::new(value.to_owned())
+                .map_err(|error| ConfigError::at(line, error.to_string()))?;
+            (PolicyAction::Route(Endpoint::Proxy(id.clone())), Some(id))
+        }
+    };
+    Ok(ParsedAction { action, proxy_ref })
+}
+
+struct ParsedRule {
+    rule: PolicyRule,
+    proxy_ref: Option<EndpointId>,
+}
+
+fn parse_rule(fields: &[&str], line: usize, id: u64) -> Result<ParsedRule, ConfigError> {
+    if fields.len() < 3 {
+        return Err(ConfigError::at(
+            line,
+            "rule syntax is `rule <direct|reject|proxy:id> <matcher> [value]`",
+        ));
+    }
+    let parsed_action = parse_action(fields[1], line)?;
+    let matcher = match fields[2] {
+        "any" if fields.len() == 3 => Matcher::Any,
+        "domain-exact" if fields.len() == 4 => {
+            Matcher::DomainExact(normalize_domain(fields[3], line)?)
+        }
+        "domain-suffix" if fields.len() == 4 => {
+            Matcher::DomainSuffix(normalize_domain(fields[3], line)?)
+        }
+        "ip" if fields.len() == 4 => Matcher::Ip(
+            fields[3]
+                .parse()
+                .map_err(|_| ConfigError::at(line, "invalid IP address"))?,
+        ),
+        "cidr" if fields.len() == 4 => Matcher::Cidr(
+            fields[3]
+                .parse::<IpCidr>()
+                .map_err(|error| ConfigError::at(line, error.to_string()))?,
+        ),
+        "port" if fields.len() == 4 => {
+            let port: u16 = fields[3]
+                .parse()
+                .map_err(|_| ConfigError::at(line, "invalid destination port"))?;
+            if port == 0 {
+                return Err(ConfigError::at(line, "destination port must not be zero"));
+            }
+            Matcher::Port(port)
+        }
+        "transport" if fields.len() == 4 => Matcher::Transport(match fields[3] {
+            "tcp" => commeatus_core::TransportProtocol::Tcp,
+            "udp" => commeatus_core::TransportProtocol::Udp,
+            _ => {
+                return Err(ConfigError::at(
+                    line,
+                    "transport matcher must be `tcp` or `udp`",
+                ));
+            }
+        }),
+        _ => {
+            return Err(ConfigError::at(
+                line,
+                "supported matchers: any, domain-exact, domain-suffix, ip, cidr, port, transport",
+            ));
+        }
+    };
+
+    Ok(ParsedRule {
+        rule: PolicyRule {
+            id: RuleId::new(id),
+            tier: PolicyTier::UserHard,
+            matcher,
+            action: parsed_action.action,
+        },
+        proxy_ref: parsed_action.proxy_ref,
     })
 }
 
@@ -452,75 +619,6 @@ fn read_bounded_asset(
     })
 }
 
-fn parse_action(value: &str, line: usize) -> Result<PolicyAction, ConfigError> {
-    match value {
-        "direct" => Ok(PolicyAction::Route(Endpoint::Direct)),
-        "reject" => Ok(PolicyAction::Reject(RejectReason::Policy)),
-        _ => Err(ConfigError::at(line, "action must be `direct` or `reject`")),
-    }
-}
-
-fn parse_rule(fields: &[&str], line: usize, id: u64) -> Result<PolicyRule, ConfigError> {
-    if fields.len() < 3 {
-        return Err(ConfigError::at(
-            line,
-            "rule syntax is `rule <direct|reject> <matcher> [value]`",
-        ));
-    }
-    let action = parse_action(fields[1], line)?;
-    let matcher = match fields[2] {
-        "any" if fields.len() == 3 => Matcher::Any,
-        "domain-exact" if fields.len() == 4 => {
-            Matcher::DomainExact(normalize_domain(fields[3], line)?)
-        }
-        "domain-suffix" if fields.len() == 4 => {
-            Matcher::DomainSuffix(normalize_domain(fields[3], line)?)
-        }
-        "ip" if fields.len() == 4 => Matcher::Ip(
-            fields[3]
-                .parse()
-                .map_err(|_| ConfigError::at(line, "invalid IP address"))?,
-        ),
-        "cidr" if fields.len() == 4 => Matcher::Cidr(
-            fields[3]
-                .parse::<IpCidr>()
-                .map_err(|error| ConfigError::at(line, error.to_string()))?,
-        ),
-        "port" if fields.len() == 4 => {
-            let port: u16 = fields[3]
-                .parse()
-                .map_err(|_| ConfigError::at(line, "invalid destination port"))?;
-            if port == 0 {
-                return Err(ConfigError::at(line, "destination port must not be zero"));
-            }
-            Matcher::Port(port)
-        }
-        "transport" if fields.len() == 4 => Matcher::Transport(match fields[3] {
-            "tcp" => commeatus_core::TransportProtocol::Tcp,
-            "udp" => commeatus_core::TransportProtocol::Udp,
-            _ => {
-                return Err(ConfigError::at(
-                    line,
-                    "transport matcher must be `tcp` or `udp`",
-                ));
-            }
-        }),
-        _ => {
-            return Err(ConfigError::at(
-                line,
-                "supported matchers: any, domain-exact, domain-suffix, ip, cidr, port, transport",
-            ));
-        }
-    };
-
-    Ok(PolicyRule {
-        id: RuleId::new(id),
-        tier: PolicyTier::UserHard,
-        matcher,
-        action,
-    })
-}
-
 fn normalize_domain(value: &str, line: usize) -> Result<String, ConfigError> {
     let normalized = value.trim_matches('.').to_ascii_lowercase();
     if normalized.is_empty() || normalized.len() > 253 {
@@ -598,6 +696,52 @@ mod tests {
             plan(&store, DestinationHost::Ip("10.20.30.40".parse().unwrap())),
             ExecutionAction::Reject { .. }
         ));
+    }
+
+    #[test]
+    fn named_proxy_endpoint_compiles_into_policy_and_registry() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            endpoint edge socks5 127.0.0.1:1081
+            rule proxy:edge domain-suffix proxied.example
+            default direct
+        "#;
+        let store = ConfigStore::new(config).unwrap();
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(snapshot.outbounds().len(), 1);
+        assert!(matches!(
+            plan(
+                &store,
+                DestinationHost::Domain("api.proxied.example".to_owned())
+            ),
+            ExecutionAction::Route {
+                endpoint: Endpoint::Proxy(ref id)
+            } if id.as_str() == "edge"
+        ));
+    }
+
+    #[test]
+    fn undefined_proxy_endpoint_rejects_candidate() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            rule proxy:missing any
+            default direct
+        "#;
+        assert!(parse_config(config).is_err());
+    }
+
+    #[test]
+    fn duplicate_proxy_endpoint_id_is_rejected() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            endpoint edge socks5 127.0.0.1:1081
+            endpoint edge http 127.0.0.1:8081
+            default direct
+        "#;
+        assert!(parse_config(config).is_err());
     }
 
     #[test]

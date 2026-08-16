@@ -47,22 +47,13 @@ impl Target {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Authorization {
-    Direct,
-    Reject,
-}
-
 #[must_use]
-pub fn authorize(
+pub fn plan_action(
     runtime: &Runtime,
     target: &Target,
     transport: TransportProtocol,
-) -> Authorization {
-    match runtime.plan(&target.flow(transport)).action {
-        ExecutionAction::Route { .. } => Authorization::Direct,
-        ExecutionAction::Reject { .. } => Authorization::Reject,
-    }
+) -> ExecutionAction {
+    runtime.plan(&target.flow(transport)).action
 }
 
 pub fn connect_direct(target: &Target, dns: &DnsEngine) -> io::Result<TcpStream> {
@@ -174,14 +165,14 @@ mod tests {
             PolicyAction::Reject(commeatus_core::RejectReason::Policy),
         ));
         let target = Target::new(DestinationHost::Ip(Ipv4Addr::LOCALHOST.into()), 80).unwrap();
-        assert_eq!(
-            authorize(&runtime, &target, TransportProtocol::Tcp),
-            Authorization::Reject
-        );
+        assert!(matches!(
+            plan_action(&runtime, &target, TransportProtocol::Tcp),
+            ExecutionAction::Reject { .. }
+        ));
     }
 
     #[test]
-    fn transport_is_part_of_policy_authorization() {
+    fn transport_is_part_of_policy_planning() {
         let runtime = Runtime::new(PolicyEngine::new(
             vec![commeatus_core::PolicyRule {
                 id: commeatus_core::RuleId::new(1),
@@ -192,29 +183,23 @@ mod tests {
             PolicyAction::Route(Endpoint::Direct),
         ));
         let target = Target::new(DestinationHost::Ip(Ipv4Addr::LOCALHOST.into()), 53).unwrap();
-        assert_eq!(
-            authorize(&runtime, &target, TransportProtocol::Tcp),
-            Authorization::Direct
-        );
-        assert_eq!(
-            authorize(&runtime, &target, TransportProtocol::Udp),
-            Authorization::Reject
-        );
+        assert!(matches!(
+            plan_action(&runtime, &target, TransportProtocol::Tcp),
+            ExecutionAction::Route {
+                endpoint: Endpoint::Direct
+            }
+        ));
+        assert!(matches!(
+            plan_action(&runtime, &target, TransportProtocol::Udp),
+            ExecutionAction::Reject { .. }
+        ));
     }
 
     #[test]
     fn direct_connector_reaches_local_listener() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let address = listener.local_addr().unwrap();
-        let runtime = Runtime::new(PolicyEngine::new(
-            Vec::new(),
-            PolicyAction::Route(Endpoint::Direct),
-        ));
         let target = Target::new(DestinationHost::Ip(address.ip()), address.port()).unwrap();
-        assert_eq!(
-            authorize(&runtime, &target, TransportProtocol::Tcp),
-            Authorization::Direct
-        );
         let client = connect_direct(&target, &dns()).unwrap();
         let (_server, _) = listener.accept().unwrap();
         assert_eq!(client.peer_addr().unwrap(), address);

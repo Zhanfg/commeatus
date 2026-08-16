@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "commeatus"
-version = "0.2.0-alpha.1"
+version = "0.3.0-alpha.1"
 dependencies = [
  "commeatus-compat",
  "commeatus-core",
@@ -14,19 +14,19 @@ dependencies = [
 
 [[package]]
 name = "commeatus-compat"
-version = "0.2.0-alpha.1"
+version = "0.3.0-alpha.1"
 dependencies = [
  "commeatus-core",
 ]
 
 [[package]]
 name = "commeatus-core"
-version = "0.2.0-alpha.1"
+version = "0.3.0-alpha.1"
 
 [[package]]
 name = "commeatus-dns"
-version = "0.2.0-alpha.1"
+version = "0.3.0-alpha.1"
 
 [[package]]
 name = "commeatus-platform"
-version = "0.2.0-alpha.1"
+version = "0.3.0-alpha.1"

@@ -4,7 +4,7 @@ Commeatus is a Rust proxy core and runtime built around a flow-centric policy mo
 
 The name comes from Latin *commeatus*: passage, free movement, traffic, and a route through which movement can occur.
 
-> **Status:** `0.2.0-alpha.1`. This is an experimental alpha, not a production-ready replacement for mihomo or sing-box. It is, however, a real TCP/UDP proxy runtime with native policy, compiled domain filtering, an isolated DNS engine, Android arm64 builds, and a CI-verified eBPF prototype boundary.
+> **Status:** `0.3.0-alpha.1`. This is an experimental alpha, not a production-ready replacement for mihomo or sing-box. It has a real TCP/UDP inbound data plane, native policy, compiled domain filtering, an isolated DNS engine, named native proxy TCP outbounds, Android arm64 builds, and a CI-verified eBPF prototype boundary.
 
 ## Project priorities
 
@@ -20,9 +20,35 @@ In order of precedence:
 
 A feature must not weaken a higher-priority property without an explicit architecture decision.
 
-## What works in 0.2.0-alpha.1
+## Runtime model
 
-### Proxy data plane
+The first-class runtime object is a flow:
+
+```text
+DISCOVER → CLASSIFY → POLICY → PLAN → CONNECT → TRANSFER → OBSERVE → COMPLETE
+```
+
+Policy produces an immutable execution result instead of invoking a protocol implementation directly:
+
+```text
+FlowContext
+    ↓
+PolicyEngine
+    ↓
+ExecutionPlan
+    ↓
+ExecutionAction
+   ├─ Reject(reason)
+   └─ Route(endpoint)
+        ├─ Direct
+        └─ Proxy(EndpointId)
+```
+
+`Reject` is an action, not a fake outbound. The core knows a proxy endpoint only by its validated opaque `EndpointId`; SOCKS5/HTTP protocol configuration and upstream addresses remain execution-layer data.
+
+## What works in 0.3.0-alpha.1
+
+### Inbounds and direct data plane
 
 - Linux x86_64 and Android arm64 `commeatus` executable
 - SOCKS5 no-auth TCP `CONNECT`
@@ -30,14 +56,65 @@ A feature must not weaken a higher-priority property without an explicit archite
 - HTTP/1.x `CONNECT`
 - IPv4, IPv6 and domain destinations
 - bidirectional TCP relay with half-close handling
+- policy-aware direct UDP relay
 - UDP association lifetime bound to its SOCKS5 TCP control connection
 - UDP client endpoint locking and remote-reply allowlisting
-- 256 active TCP-session cap and 256 remembered remote UDP endpoints per association
 - explicit rejection of unsupported SOCKS5 UDP fragmentation
+
+### Named proxy TCP outbounds
+
+The daemon owns an execution-layer `OutboundRegistry`:
+
+```text
+EndpointId
+   ↓
+OutboundRegistry
+   ├─ protocol capability
+   ├─ upstream address
+   └─ connector implementation
+```
+
+The first native proxy outbounds are:
+
+- upstream SOCKS5 no-auth TCP `CONNECT`
+- upstream HTTP/1.x `CONNECT`
+
+A domain selected for a proxy route is preserved to the upstream proxy. It is **not** first resolved through the local DIRECT DNS engine.
+
+Current proxy endpoints advertise TCP capability only. If policy selects one for UDP, the datagram is not silently sent DIRECT.
+
+### Native outbound configuration
+
+```text
+version 1
+
+listen socks5 127.0.0.1:1080
+listen http 127.0.0.1:8080
+
+endpoint edge-socks socks5 127.0.0.1:1081
+endpoint office-http http 127.0.0.1:8081
+
+rule proxy:edge-socks domain-suffix proxied.example
+rule proxy:office-http domain-exact office.example
+
+default direct
+```
+
+Rules and the default action may reference `proxy:<id>`. Protocol and upstream address remain endpoint-registry data rather than policy/core data.
+
+Current endpoint guards:
+
+- maximum 64 named proxy endpoints
+- endpoint IDs are 1–64 ASCII alphanumeric/`._-` characters
+- duplicate IDs are rejected
+- undefined `proxy:<id>` references are rejected before runtime commit
+- upstream endpoint address must currently be a literal IP socket address with a non-zero port
+
+Literal upstream addresses are deliberate for this slice. Proxy-bootstrap DNS will receive explicit semantics later instead of being smuggled into the config parser.
 
 ### Flow and policy
 
-Every TCP and UDP target continues through the same native pipeline:
+TCP and UDP targets use the same native pipeline:
 
 ```text
 Inbound request/datagram
@@ -49,8 +126,6 @@ Inbound request/datagram
  PolicyEngine
         ↓
 ExecutionPlan
-    ↙       ↘
- DIRECT    REJECT
 ```
 
 Available native matchers include:
@@ -61,6 +136,7 @@ Available native matchers include:
 - IPv4/IPv6 CIDR
 - destination port
 - transport (`tcp` / `udp`)
+- compiled domain filter
 
 Policy authority remains:
 
@@ -68,13 +144,11 @@ Policy authority remains:
 UserHard > Safety > Compatibility > Adaptive > Default
 ```
 
-`Reject` is an action, not an outbound endpoint. `Direct` is an endpoint selected by a route action.
-
 ### Compiled blocklists
 
 Large domain policy assets compile once into immutable native domain sets instead of becoming one linear runtime rule per source line.
 
-Accepted source forms in this alpha:
+Accepted alpha forms include:
 
 ```text
 0.0.0.0 ads.example
@@ -90,9 +164,15 @@ Supported semantics:
 - AdBlock-style domain suffix rules
 - AdBlock-style allow exceptions
 - DNS-label-boundary suffix matching
-- deduplication and normalization
+- normalization and deduplication
 
-Allow exceptions are **filter exceptions only**. They do not silently force `DIRECT` and therefore cannot override an unrelated user routing policy.
+Allow exceptions are **filter exceptions only**. They do not force `DIRECT` and therefore cannot override unrelated routing policy.
+
+Configuration:
+
+```text
+blocklist ./rules/ads.txt
+```
 
 Resource guards:
 
@@ -102,7 +182,7 @@ Resource guards:
 
 ### DNS failure domain
 
-Domain resolution is no longer performed inside SOCKS5 or HTTP protocol handlers. All direct domain destinations go through `commeatus-dns`:
+Direct domain resolution lives in `commeatus-dns`, not in SOCKS5 or HTTP handlers:
 
 ```text
 Domain
@@ -113,30 +193,28 @@ Bounded cache
   ↓ miss
 Ordered Resolver chain
   ↓
-System Resolver   (v0.2 network resolver)
+System Resolver   (current network resolver)
 ```
 
-The DNS engine currently provides:
+The DNS engine provides:
 
-- separate typed errors and statistics
+- typed errors and statistics
 - DNS hosts overrides
 - ordered resolver fallback abstraction
 - bounded 4,096-entry cache
 - 60-second default synthetic cache TTL
 - hard maximum cache TTL of 300 seconds
 - at most 16 returned addresses per resolution
-- resolver failure isolation rather than process-wide failure
+- resolver failure isolation
 
-System DNS is the only network resolver in `0.2.0-alpha.1`. DoH, DoT, DoQ and Fake-IP are future resolver/backend work behind this boundary.
+System DNS is still the only network resolver in `0.3.0-alpha.1`. DoH, DoT, DoQ and Fake-IP are future implementations behind the resolver boundary.
 
-DNS hosts assets are distinct from blocklists:
+DNS hosts assets are separate from blocklists:
 
 ```text
-hosts <path>      # name → IP resolution override
-blocklist <path>  # policy rejection source
+hosts ./dns/hosts.txt       # name → IP resolution override
+blocklist ./rules/ads.txt   # policy rejection source
 ```
-
-These two concepts intentionally do not share semantics.
 
 ### Platform capability boundary
 
@@ -153,14 +231,12 @@ A result can be `available`, `unavailable`, or `unknown`. `unknown` is never sil
 
 ### eBPF prototype
 
-The repository now contains CI-compiled eBPF programs for:
+The repository contains CI-compiled programs for:
 
 - `cgroup/connect4`
 - `cgroup/connect6`
 
-The current programs deliberately return allow and perform **no redirect, block, mark or rewrite**. GitHub Actions compiles the BPF ELF and verifies the expected sections. There is no userspace loader or live Android interception in this release.
-
-This establishes the attach-point/toolchain boundary before introducing privileged live behavior.
+They deliberately return allow and perform no redirect, block, mark or rewrite. There is no live loader in this release.
 
 ## Quick start
 
@@ -170,16 +246,22 @@ Build:
 cargo build --release --locked -p commeatus
 ```
 
-Inspect platform capabilities:
+Inspect platform evidence:
 
 ```bash
 ./target/release/commeatus platform
 ```
 
-Validate configuration:
+Validate the normal example:
 
 ```bash
 ./target/release/commeatus check --config examples/commeatus.conf
+```
+
+Validate named proxy endpoint syntax:
+
+```bash
+./target/release/commeatus check --config examples/proxy-outbound.conf
 ```
 
 Run:
@@ -188,40 +270,11 @@ Run:
 ./target/release/commeatus run --config examples/commeatus.conf
 ```
 
-The bundled example listens only on loopback.
+The bundled normal example listens only on loopback.
 
-## Native alpha configuration
+## Transactional configuration
 
-The native syntax is deliberately small and remains unstable before 1.0:
-
-```text
-version 1
-
-listen socks5 127.0.0.1:1080
-listen http 127.0.0.1:8080
-
-default direct
-
-rule reject domain-suffix ads.example
-rule reject domain-exact blocked.example
-rule reject ip 203.0.113.8
-rule reject cidr 10.0.0.0/8
-rule reject port 25
-rule reject transport udp
-```
-
-Optional external policy/DNS assets:
-
-```text
-blocklist ./rules/ads.txt
-hosts ./dns/hosts.txt
-```
-
-Relative asset paths are resolved relative to the configuration file directory, not the daemon working directory. Assets are fully read and compiled as part of the candidate configuration before the active runtime is replaced.
-
-### Transactional configuration
-
-The intended lifecycle is:
+Configuration and referenced assets follow candidate-then-swap semantics:
 
 ```text
 source
@@ -232,18 +285,18 @@ validate
   ↓
 load referenced assets
   ↓
-compile Policy + DNS candidate
+compile Policy + DNS + OutboundRegistry candidate
   ↓
 atomic snapshot replacement
 ```
 
-If a config, blocklist or hosts file is malformed, missing or over its resource limit, the candidate fails and the Last Known Good snapshot remains active.
+Malformed configuration, dangling endpoint references, missing/oversized blocklists, or invalid hosts files fail the candidate. The Last Known Good snapshot remains active.
 
-### Public-listen safety
+## Public-listen safety
 
-SOCKS5 and HTTP authentication are still **not implemented**. Non-loopback listener addresses are therefore rejected by default.
+Inbound SOCKS5 and HTTP authentication are still **not implemented**. Non-loopback listener addresses are rejected by default.
 
-Intentional opt-out:
+Explicit opt-out:
 
 ```text
 allow-public-listen true
@@ -251,39 +304,46 @@ allow-public-listen true
 
 Do not use this on an untrusted network without another access-control layer.
 
-## Stability/resource guards
+## Stability and resource guards
 
-Current alpha guards include:
+Current guards include:
 
 - configuration: 1 MiB
 - native policy rules: 4,096
 - listeners: 16
+- named proxy endpoints: 64
 - blocklists: 8
 - hosts files: 4
 - hosts source: 4 MiB
 - parsed hosts names: 100,000
 - active TCP sessions: 256
 - remembered UDP remote endpoints per association: 256
-- SOCKS5/HTTP handshake timeout: 10 seconds
-- outbound TCP connect deadline: 10 seconds after resolution
+- SOCKS5/HTTP inbound handshake timeout: 10 seconds
+- direct outbound TCP connect deadline: 10 seconds after resolution
+- proxy upstream TCP connect timeout: 10 seconds
+- proxy handshake timeout: 10 seconds
 - resolved-address candidate cap: 16
 - UDP idle timeout: 120 seconds
+- upstream HTTP response-header cap: 16 KiB
 
 All configured listener sockets must bind before service starts. Per-flow/session errors remain local. Thread creation is fallible rather than panic-based, and relay I/O errors shut down both directions to avoid stranded sessions.
 
 ## Current limitations
 
-`0.2.0-alpha.1` does **not** include:
+`0.3.0-alpha.1` does **not** include:
 
-- SOCKS5 username/password authentication
-- HTTP proxy authentication
-- ordinary forward-HTTP requests
+- inbound SOCKS5/HTTP authentication
+- upstream SOCKS5/HTTP authentication
+- ordinary forward-HTTP proxying
 - SOCKS5 UDP fragmentation/reassembly
+- proxy UDP execution
+- endpoint groups, health selection or load balancing
+- TLS transport provider
+- Shadowsocks, Trojan, VLESS, Hysteria2 or TUIC
 - TUN interception
 - live TPROXY installation
 - live eBPF loading, policy maps or redirection
 - Android KernelSU/Magisk module packaging
-- native proxy outbounds such as Shadowsocks, Trojan, VLESS, Hysteria2 or TUIC
 - DoH, DoT, DoQ or Fake-IP
 - remote rule-provider refresh
 - Clash/mihomo/sing-box configuration import or compatible API
@@ -291,7 +351,7 @@ All configured listener sockets must bind before service starts. Per-flow/sessio
 - process-level live reload watcher
 - final low-power event-driven execution backend
 
-The current blocking `std` socket / bounded thread-per-session executor remains transitional. It exists to keep the execution path small and auditable while protocol, policy, DNS and platform boundaries stabilize.
+The current blocking `std` socket / bounded thread-per-session executor remains transitional. It keeps the execution path small and auditable while protocol, policy, DNS and platform boundaries stabilize.
 
 A CIDR rule still matches only a canonical IP destination. It does not retroactively replace domain identity with DNS results; this is intentional until DNS-derived matching is explicitly modeled.
 
@@ -310,15 +370,17 @@ GitHub Actions on Ubuntu validates:
 - eBPF Clang build and `cgroup/connect4`, `cgroup/connect6`, `license` section verification
 - Linux + Android release-package dry run with SHA-256 verification
 
-The test suite includes real loopback E2E for:
+The E2E suite includes real loopback coverage for:
 
-- SOCKS5 TCP CONNECT
-- HTTP CONNECT, including buffered tunnel bytes
-- SOCKS5 UDP ASSOCIATE
-- TCP domain routing through a hosts-only DNS override
-- UDP domain routing through a hosts-only DNS override
+- SOCKS5 TCP `CONNECT`
+- HTTP `CONNECT`, including buffered tunnel bytes
+- SOCKS5 UDP `ASSOCIATE`
+- TCP/UDP domain routing through a hosts-only DNS override
 - policy rejection before outbound connect
-- listener survival after a malformed client
+- listener survival after malformed input
+- SOCKS5 inbound → named upstream SOCKS5 proxy → echo
+- HTTP CONNECT inbound → named upstream HTTP proxy → echo
+- `.invalid` target-domain preservation to the selected upstream proxy without local destination DNS
 
 ## Repository layout
 
@@ -326,9 +388,9 @@ The test suite includes real loopback E2E for:
 .
 ├── Cargo.toml
 ├── crates/
-│   ├── core/       # Flow / Policy / ExecutionPlan / compiled domain sets
+│   ├── core/       # Flow / Policy / ExecutionPlan / endpoint identity
 │   ├── dns/        # DNS engine, hosts, cache and resolver boundary
-│   ├── daemon/     # runnable proxy and native alpha config
+│   ├── daemon/     # inbound handlers, outbound registry and execution
 │   ├── platform/   # Linux / Android capability boundary
 │   └── compat/     # external-format compilers such as blocklists
 ├── ebpf/           # compile-verified eBPF prototypes
@@ -342,12 +404,14 @@ The test suite includes real loopback E2E for:
 - Flow is the first-class runtime object.
 - Compatibility formats terminate at the compatibility boundary.
 - Actions, endpoints, transports, resolvers and policies remain distinct concepts.
+- Proxy protocol configuration does not leak into the core endpoint identity.
 - One state has one authoritative owner.
 - A subsystem failure must not automatically become a global network outage.
 - Configuration candidates and referenced assets are validated before replacing active state.
 - Root/eBPF behavior is capability-gated platform logic, not a core assumption.
 - Direct traffic should eventually avoid unnecessary userspace traversal where the platform safely supports it.
 - User hard policy and safety constraints outrank adaptive decisions.
+- Unsupported endpoint capability must fail locally; it must not mutate policy into a fallback route.
 
 Accepted architecture decisions live in `docs/adr/`.
 
@@ -355,13 +419,15 @@ Accepted architecture decisions live in `docs/adr/`.
 
 After this release line, the highest-value work is:
 
-1. protocol/transport capability registry and first native encrypted proxy outbounds
-2. secure DNS resolvers behind the isolated DNS engine
-3. TPROXY backend and safe attach/cleanup lifecycle
-4. eBPF loader, read-only policy maps, atomic generations and fallback behavior
-5. compatibility importers/API facade
-6. adaptive routing and real-traffic telemetry
-7. low-power executor and comparative power/performance benchmarks
+1. reusable transport-session boundary, starting with TLS as a transport capability rather than protocol-owned security
+2. first encrypted native proxy protocol on that transport boundary
+3. proxy UDP execution and a capability-safe datagram abstraction
+4. secure DNS resolvers behind `commeatus-dns`
+5. TPROXY backend and safe attach/cleanup lifecycle
+6. eBPF loader, read-only policy maps, atomic generations and fallback behavior
+7. compatibility importers/API facade
+8. adaptive routing and real-traffic telemetry
+9. low-power executor and comparative power/performance benchmarks
 
 ## Security
 

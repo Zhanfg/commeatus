@@ -6,10 +6,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use commeatus_core::{DestinationHost, Runtime, TransportProtocol};
+use commeatus_core::{Endpoint, ExecutionAction, Runtime, TransportProtocol};
 use commeatus_dns::DnsEngine;
 
-use crate::proxy::{self, Authorization, Target};
+use crate::{
+    outbound::{EndpointCapabilities, OutboundRegistry},
+    proxy::{self, Target},
+};
 
 const VERSION: u8 = 0x05;
 const METHOD_NO_AUTH: u8 = 0x00;
@@ -22,14 +25,19 @@ const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_UDP_PACKET: usize = 65_535;
 const MAX_UDP_REMOTE_PEERS: usize = 256;
 
-pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>, dns: Arc<DnsEngine>) -> io::Result<()> {
+pub fn handle(
+    mut client: TcpStream,
+    runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
+    outbounds: Arc<OutboundRegistry>,
+) -> io::Result<()> {
     client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
     negotiate_method(&mut client)?;
     match read_request(&mut client)? {
-        Request::Connect(target) => handle_connect(client, runtime, dns, target),
-        Request::UdpAssociate(hint) => handle_udp_associate(client, runtime, dns, hint),
+        Request::Connect(target) => handle_connect(client, runtime, dns, outbounds, target),
+        Request::UdpAssociate(hint) => handle_udp_associate(client, runtime, dns, outbounds, hint),
     }
 }
 
@@ -37,14 +45,18 @@ fn handle_connect(
     mut client: TcpStream,
     runtime: Arc<Runtime>,
     dns: Arc<DnsEngine>,
+    outbounds: Arc<OutboundRegistry>,
     target: Target,
 ) -> io::Result<()> {
-    if proxy::authorize(&runtime, &target, TransportProtocol::Tcp) == Authorization::Reject {
-        write_reply(&mut client, 0x02, None)?;
-        return Ok(());
-    }
+    let endpoint = match proxy::plan_action(&runtime, &target, TransportProtocol::Tcp) {
+        ExecutionAction::Reject { .. } => {
+            write_reply(&mut client, 0x02, None)?;
+            return Ok(());
+        }
+        ExecutionAction::Route { endpoint } => endpoint,
+    };
 
-    let remote = match proxy::connect_direct(&target, &dns) {
+    let remote = match outbounds.connect_tcp(&endpoint, &target, &dns) {
         Ok(remote) => remote,
         Err(error) => {
             let code = connect_error_code(&error);
@@ -104,7 +116,9 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         COMMAND_CONNECT => Ok(Request::Connect(Target::new(host, port)?)),
         COMMAND_UDP_ASSOCIATE => Ok(Request::UdpAssociate(UdpClientHint {
             ip: match host {
-                DestinationHost::Ip(address) if !address.is_unspecified() => Some(address),
+                commeatus_core::DestinationHost::Ip(address) if !address.is_unspecified() => {
+                    Some(address)
+                }
                 _ => None,
             },
             port: (port != 0).then_some(port),
@@ -119,12 +133,15 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
     }
 }
 
-fn read_address(stream: &mut TcpStream, address_type: u8) -> io::Result<(DestinationHost, u16)> {
+fn read_address(
+    stream: &mut TcpStream,
+    address_type: u8,
+) -> io::Result<(commeatus_core::DestinationHost, u16)> {
     let host = match address_type {
         0x01 => {
             let mut bytes = [0_u8; 4];
             stream.read_exact(&mut bytes)?;
-            DestinationHost::Ip(IpAddr::V4(Ipv4Addr::from(bytes)))
+            commeatus_core::DestinationHost::Ip(IpAddr::V4(Ipv4Addr::from(bytes)))
         }
         0x03 => {
             let mut length = [0_u8; 1];
@@ -142,12 +159,12 @@ fn read_address(stream: &mut TcpStream, address_type: u8) -> io::Result<(Destina
             if domain.is_empty() {
                 return Err(invalid_data("empty SOCKS5 domain"));
             }
-            DestinationHost::Domain(domain)
+            commeatus_core::DestinationHost::Domain(domain)
         }
         0x04 => {
             let mut bytes = [0_u8; 16];
             stream.read_exact(&mut bytes)?;
-            DestinationHost::Ip(IpAddr::V6(Ipv6Addr::from(bytes)))
+            commeatus_core::DestinationHost::Ip(IpAddr::V6(Ipv6Addr::from(bytes)))
         }
         _ => return Err(invalid_data("unsupported SOCKS5 address type")),
     };
@@ -161,6 +178,7 @@ fn handle_udp_associate(
     mut control: TcpStream,
     runtime: Arc<Runtime>,
     dns: Arc<DnsEngine>,
+    outbounds: Arc<OutboundRegistry>,
     hint: UdpClientHint,
 ) -> io::Result<()> {
     let control_peer = control.peer_addr()?;
@@ -205,6 +223,7 @@ fn handle_udp_associate(
                         &relay,
                         &runtime,
                         &dns,
+                        &outbounds,
                         &packet[..length],
                         &mut remote_peers,
                     );
@@ -245,13 +264,29 @@ fn handle_udp_client_packet(
     relay: &UdpSocket,
     runtime: &Runtime,
     dns: &DnsEngine,
+    outbounds: &OutboundRegistry,
     packet: &[u8],
     remote_peers: &mut HashSet<SocketAddr>,
 ) {
     let Ok((target, payload)) = parse_udp_request(packet) else {
         return;
     };
-    if proxy::authorize(runtime, &target, TransportProtocol::Udp) == Authorization::Reject {
+
+    let endpoint = match proxy::plan_action(runtime, &target, TransportProtocol::Udp) {
+        ExecutionAction::Reject { .. } => return,
+        ExecutionAction::Route { endpoint } => endpoint,
+    };
+
+    if !outbounds
+        .capabilities(&endpoint)
+        .is_some_and(EndpointCapabilities::supports_udp)
+    {
+        return;
+    }
+
+    // v0.3 has no proxy UDP executor. Direct is the only endpoint that can
+    // advertise UDP capability; a proxy route must never fall through here.
+    if !matches!(endpoint, Endpoint::Direct) {
         return;
     }
 
@@ -288,7 +323,7 @@ fn parse_udp_request(packet: &[u8]) -> io::Result<(Target, &[u8])> {
                 .get(offset..offset + 4)
                 .ok_or_else(|| invalid_data("truncated SOCKS5 UDP IPv4 address"))?;
             offset += 4;
-            DestinationHost::Ip(IpAddr::V4(Ipv4Addr::new(
+            commeatus_core::DestinationHost::Ip(IpAddr::V4(Ipv4Addr::new(
                 bytes[0], bytes[1], bytes[2], bytes[3],
             )))
         }
@@ -313,7 +348,7 @@ fn parse_udp_request(packet: &[u8]) -> io::Result<(Target, &[u8])> {
             if domain.is_empty() {
                 return Err(invalid_data("empty SOCKS5 UDP domain"));
             }
-            DestinationHost::Domain(domain)
+            commeatus_core::DestinationHost::Domain(domain)
         }
         0x04 => {
             let bytes = packet
@@ -322,7 +357,7 @@ fn parse_udp_request(packet: &[u8]) -> io::Result<(Target, &[u8])> {
             offset += 16;
             let mut address = [0_u8; 16];
             address.copy_from_slice(bytes);
-            DestinationHost::Ip(IpAddr::V6(Ipv6Addr::from(address)))
+            commeatus_core::DestinationHost::Ip(IpAddr::V6(Ipv6Addr::from(address)))
         }
         _ => return Err(invalid_data("unsupported SOCKS5 UDP address type")),
     };
@@ -383,6 +418,7 @@ fn connect_error_code(error: &io::Error) -> u8 {
         io::ErrorKind::TimedOut => 0x04,
         io::ErrorKind::PermissionDenied => 0x02,
         io::ErrorKind::NotFound | io::ErrorKind::AddrNotAvailable => 0x04,
+        io::ErrorKind::Unsupported => 0x07,
         _ => 0x01,
     }
 }
@@ -393,6 +429,8 @@ fn invalid_data(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use commeatus_core::DestinationHost;
+
     use super::*;
 
     #[test]
