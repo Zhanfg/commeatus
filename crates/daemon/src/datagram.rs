@@ -8,9 +8,7 @@ use std::{
 use commeatus_core::DestinationHost;
 use commeatus_dns::DnsEngine;
 
-use crate::{
-    proxy::{self, Target},
-};
+use crate::proxy::{self, Target};
 
 pub const MAX_DATAGRAM_REMOTE_PEERS: usize = 256;
 const MAX_UNTRUSTED_DRAIN_PER_RECEIVE: usize = 32;
@@ -71,7 +69,10 @@ impl DirectDatagramAssociation {
             socket.set_nonblocking(true)?;
             self.ipv6 = Some(socket);
         }
-        Ok(self.ipv6.as_ref().expect("IPv6 socket was just initialized"))
+        Ok(self
+            .ipv6
+            .as_ref()
+            .expect("IPv6 socket was just initialized"))
     }
 
     fn send_to_resolved(&mut self, address: SocketAddr, payload: &[u8]) -> io::Result<()> {
@@ -159,9 +160,7 @@ impl DatagramAssociation for DirectDatagramAssociation {
             ));
         }
 
-        if let Some(received) =
-            Self::receive_from_socket(&self.ipv4, &self.remote_peers, buffer)?
-        {
+        if let Some(received) = Self::receive_from_socket(&self.ipv4, &self.remote_peers, buffer)? {
             return Ok(Some(received));
         }
         if let Some(ipv6) = &self.ipv6 {
@@ -231,7 +230,10 @@ mod tests {
         let mut buffer = [0_u8; 64];
         let received = receive_until(&mut association, &mut buffer).unwrap();
         assert_eq!(&buffer[..received.length], b"pong");
-        assert_eq!(received.source.host, DestinationHost::Ip(remote_address.ip()));
+        assert_eq!(
+            received.source.host,
+            DestinationHost::Ip(remote_address.ip())
+        );
         assert_eq!(received.source.port, remote_address.port());
         remote_thread.join().unwrap();
     }
@@ -264,8 +266,11 @@ mod tests {
         remote.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
         let remote_address = remote.local_addr().unwrap();
         let mut association = DirectDatagramAssociation::new(dns("")).unwrap();
-        let target = Target::new(DestinationHost::Ip(remote_address.ip()), remote_address.port())
-            .unwrap();
+        let target = Target::new(
+            DestinationHost::Ip(remote_address.ip()),
+            remote_address.port(),
+        )
+        .unwrap();
 
         association.send(&target, &[]).unwrap();
         let mut buffer = [0_u8; 1];
@@ -296,20 +301,14 @@ mod tests {
     fn remote_peer_limit_is_bounded() {
         let mut association = DirectDatagramAssociation::new(dns("")).unwrap();
         for port in 10_000_u16..10_000_u16 + MAX_DATAGRAM_REMOTE_PEERS as u16 {
-            let target = Target::new(
-                DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                port,
-            )
-            .unwrap();
+            let target =
+                Target::new(DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)), port).unwrap();
             association.send(&target, b"x").unwrap();
         }
         assert_eq!(association.remote_peer_count(), MAX_DATAGRAM_REMOTE_PEERS);
 
-        let overflow = Target::new(
-            DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-            20_000,
-        )
-        .unwrap();
+        let overflow =
+            Target::new(DestinationHost::Ip(IpAddr::V4(Ipv4Addr::LOCALHOST)), 20_000).unwrap();
         let error = association.send(&overflow, b"x").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::QuotaExceeded);
     }
@@ -329,14 +328,20 @@ mod tests {
         });
 
         let mut association = DirectDatagramAssociation::new(dns("")).unwrap();
-        let target = Target::new(DestinationHost::Ip(remote_address.ip()), remote_address.port())
-            .unwrap();
+        let target = Target::new(
+            DestinationHost::Ip(remote_address.ip()),
+            remote_address.port(),
+        )
+        .unwrap();
         association.send(&target, b"v6-ping").unwrap();
 
         let mut buffer = [0_u8; 64];
         let received = receive_until(&mut association, &mut buffer).unwrap();
         assert_eq!(&buffer[..received.length], b"v6-pong");
-        assert_eq!(received.source.host, DestinationHost::Ip(remote_address.ip()));
+        assert_eq!(
+            received.source.host,
+            DestinationHost::Ip(remote_address.ip())
+        );
         remote_thread.join().unwrap();
     }
 }
