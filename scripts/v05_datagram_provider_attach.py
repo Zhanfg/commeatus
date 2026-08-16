@@ -10,6 +10,100 @@ def replace_once(path: str, old: str, new: str) -> None:
     p.write_text(text.replace(old, new, 1))
 
 
+def is_initializer_start(line: str) -> bool:
+    if "ProxyEndpointConfig {" not in line:
+        return False
+    stripped = line.strip()
+    return not (
+        stripped.startswith("pub struct ProxyEndpointConfig {")
+        or stripped.startswith("struct ProxyEndpointConfig {")
+    )
+
+
+def is_transport_field(line: str) -> bool:
+    stripped = line.strip()
+    return stripped == "transport," or stripped.startswith("transport:")
+
+
+def insert_datagram_fields(path: Path) -> int:
+    """Insert `datagram: None` before each endpoint initializer's transport field.
+
+    Do not parse Rust braces. Initializer values may contain nested blocks,
+    closures, or macros; the field order is the stable local invariant we need.
+    """
+    lines = path.read_text().splitlines(keepends=True)
+    output: list[str] = []
+    waiting_for_transport = False
+    saw_datagram = False
+    initializers = 0
+    inserted = 0
+
+    for line in lines:
+        if is_initializer_start(line):
+            if waiting_for_transport:
+                raise SystemExit(
+                    f"new ProxyEndpointConfig initializer before transport field in {path}"
+                )
+            waiting_for_transport = True
+            saw_datagram = False
+            initializers += 1
+            output.append(line)
+            continue
+
+        if waiting_for_transport:
+            stripped = line.strip()
+            if stripped.startswith("datagram:"):
+                saw_datagram = True
+            if is_transport_field(line):
+                if not saw_datagram:
+                    indent = line[: len(line) - len(line.lstrip())]
+                    output.append(f"{indent}datagram: None,\n")
+                    inserted += 1
+                waiting_for_transport = False
+                saw_datagram = False
+
+        output.append(line)
+
+    if waiting_for_transport:
+        raise SystemExit(f"ProxyEndpointConfig initializer without transport field in {path}")
+
+    if initializers:
+        path.write_text("".join(output))
+    return initializers
+
+
+def verify_datagram_fields(path: Path) -> int:
+    lines = path.read_text().splitlines()
+    waiting_for_transport = False
+    saw_datagram = False
+    initializers = 0
+
+    for line in lines:
+        if is_initializer_start(line):
+            if waiting_for_transport:
+                raise SystemExit(
+                    f"nested/adjacent ProxyEndpointConfig before transport in {path}"
+                )
+            waiting_for_transport = True
+            saw_datagram = False
+            initializers += 1
+            continue
+        if not waiting_for_transport:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("datagram:"):
+            saw_datagram = True
+        if is_transport_field(line):
+            if not saw_datagram:
+                raise SystemExit(f"endpoint initializer missing datagram field in {path}")
+            waiting_for_transport = False
+            saw_datagram = False
+
+    if waiting_for_transport:
+        raise SystemExit(f"unterminated endpoint initializer in {path}")
+    return initializers
+
+
 # Add the provider interface without coupling it to a concrete transport config.
 replace_once(
     "crates/daemon/src/datagram.rs",
@@ -121,107 +215,19 @@ replace_once(
             }''',
 )
 
-# Every existing endpoint remains explicitly stream-only. Do not modify the
-# struct definition in outbound.rs here; only initializers in Rust files.
-for path in Path("crates/daemon/src").glob("*.rs"):
-    if path.name == "outbound.rs":
-        continue
-    text = path.read_text()
-    if "ProxyEndpointConfig {" not in text:
-        continue
-    lines = text.splitlines(keepends=True)
-    output = []
-    in_init = False
-    depth = 0
-    inserted_for_block = False
-    changed = False
-    for line in lines:
-        if not in_init and "ProxyEndpointConfig {" in line:
-            in_init = True
-            depth = line.count("{") - line.count("}")
-            inserted_for_block = False
-            output.append(line)
-            continue
-        if in_init:
-            if not inserted_for_block and line.lstrip().startswith("transport:"):
-                indent = line[: len(line) - len(line.lstrip())]
-                output.append(f"{indent}datagram: None,\n")
-                inserted_for_block = True
-                changed = True
-            output.append(line)
-            depth += line.count("{") - line.count("}")
-            if depth <= 0:
-                if not inserted_for_block:
-                    raise SystemExit(f"ProxyEndpointConfig initializer without transport field in {path}")
-                in_init = False
-            continue
-        output.append(line)
-    if in_init:
-        raise SystemExit(f"unterminated ProxyEndpointConfig initializer in {path}")
-    if changed:
-        path.write_text("".join(output))
+# Every existing native endpoint remains explicitly stream-only. Use field
+# order rather than Rust brace depth so nested closures/blocks inside values do
+# not confuse the migration.
+source_files = sorted(Path("crates/daemon/src").glob("*.rs"))
+initializer_count = 0
+for path in source_files:
+    initializer_count += insert_datagram_fields(path)
 
-# Add datagram: None to initializers inside outbound.rs itself.
-outbound = Path("crates/daemon/src/outbound.rs")
-text = outbound.read_text()
-needle = "            protocol: "
-# Scan only the #[cfg(test)] section to avoid the struct definition.
-prefix, marker, tests = text.partition("#[cfg(test)]")
-if not marker:
-    raise SystemExit("outbound.rs test module missing")
-lines = tests.splitlines(keepends=True)
-output = []
-in_init = False
-depth = 0
-inserted = False
-for line in lines:
-    if not in_init and "ProxyEndpointConfig {" in line:
-        in_init = True
-        depth = line.count("{") - line.count("}")
-        inserted = False
-        output.append(line)
-        continue
-    if in_init:
-        if not inserted and line.lstrip().startswith("transport:"):
-            indent = line[: len(line) - len(line.lstrip())]
-            output.append(f"{indent}datagram: None,\n")
-            inserted = True
-        output.append(line)
-        depth += line.count("{") - line.count("}")
-        if depth <= 0:
-            if not inserted:
-                raise SystemExit("outbound test endpoint initializer missing transport")
-            in_init = False
-        continue
-    output.append(line)
-outbound.write_text(prefix + marker + "".join(output))
+if initializer_count == 0:
+    raise SystemExit("no ProxyEndpointConfig initializers were found")
 
-# Hard invariant: every initializer has an explicit datagram attachment field.
-for path in Path("crates/daemon/src").glob("*.rs"):
-    text = path.read_text()
-    start = 0
-    while True:
-        index = text.find("ProxyEndpointConfig {", start)
-        if index < 0:
-            break
-        # Skip the struct definition.
-        line_start = text.rfind("\n", 0, index) + 1
-        if text[line_start:index].strip().endswith("struct"):
-            start = index + 1
-            continue
-        depth = 0
-        end = None
-        for pos in range(index + len("ProxyEndpointConfig "), len(text)):
-            if text[pos] == "{":
-                depth += 1
-            elif text[pos] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = pos + 1
-                    break
-        if end is None:
-            raise SystemExit(f"unterminated endpoint initializer in {path}")
-        block = text[index:end]
-        if "datagram:" not in block:
-            raise SystemExit(f"endpoint initializer missing datagram field in {path}")
-        start = end
+verified_count = sum(verify_datagram_fields(path) for path in source_files)
+if verified_count != initializer_count:
+    raise SystemExit(
+        f"endpoint initializer verification count changed: {initializer_count} -> {verified_count}"
+    )
