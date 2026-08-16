@@ -38,8 +38,18 @@ jobs:
         run: cargo check --workspace --all-targets --locked
       - name: Clippy stable
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Test stable
-        run: cargo test --workspace --locked
+      - name: Test core
+        run: cargo test -p commeatus-core --locked
+      - name: Test DNS
+        run: cargo test -p commeatus-dns --locked
+      - name: Test transport
+        run: cargo test -p commeatus-transport --locked
+      - name: Test platform
+        run: cargo test -p commeatus-platform --locked
+      - name: Test compat
+        run: cargo test -p commeatus-compat --locked
+      - name: Test daemon
+        run: cargo test -p commeatus --locked
       - name: Verify Rust 1.85 all-targets
         run: |
           rustup toolchain install 1.85.0 --profile minimal --no-self-update
