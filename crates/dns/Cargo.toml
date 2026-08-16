@@ -6,3 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Commeatus DNS engine and resolver failure domain"
+
+[dependencies]
+commeatus-transport = { path = "../transport", version = "=0.5.0-alpha.1" }
+
+[dev-dependencies]
+rcgen = "=0.13.2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+time = "=0.3.36"
