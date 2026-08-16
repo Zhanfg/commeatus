@@ -14,6 +14,9 @@
 mod dot;
 mod wire;
 
+#[cfg(test)]
+mod dot_tls_tests;
+
 pub use dot::DotResolver;
 
 use std::{
@@ -374,9 +377,9 @@ impl fmt::Debug for DnsEngine {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DnsEngine")
-            .field("hosts", &self.hosts.len())
-            .field("resolvers", &self.resolvers.len())
-            .field("stats", &self.stats())
+            .field("hosts_entries", &self.hosts.len())
+            .field("resolver_count", &self.resolvers.len())
+            .field("cache_capacity", &self.cache.lock().map(|cache| cache.capacity).ok())
             .finish_non_exhaustive()
     }
 }
@@ -460,7 +463,7 @@ impl DnsEngine {
         Err(last_error.unwrap_or_else(|| {
             DnsError::new(
                 DnsErrorKind::NoRecords,
-                format!("no resolver produced addresses for {}", query.name()),
+                format!("no resolver returned addresses for {}", query.name()),
             )
         }))
     }
@@ -469,19 +472,11 @@ impl DnsEngine {
     pub fn stats(&self) -> DnsStats {
         self.stats.snapshot()
     }
-
-    #[must_use]
-    pub fn hosts_len(&self) -> usize {
-        self.hosts.len()
-    }
 }
 
 fn deduplicate_bounded(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
-    let mut result = Vec::with_capacity(addresses.len().min(MAX_RESOLVED_ADDRESSES));
-    for address in addresses {
-        if result.len() >= MAX_RESOLVED_ADDRESSES {
-            break;
-        }
+    let mut result = Vec::new();
+    for address in addresses.into_iter().take(MAX_RESOLVED_ADDRESSES) {
         if !result.contains(&address) {
             result.push(address);
         }
@@ -491,10 +486,10 @@ fn deduplicate_bounded(addresses: Vec<IpAddr>) -> Vec<IpAddr> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::sync::atomic::AtomicUsize;
 
-    use super::*;
-
+    #[derive(Debug)]
     struct StaticResolver {
         result: Result<DnsAnswer, DnsError>,
         calls: AtomicUsize,
@@ -531,23 +526,40 @@ mod tests {
     }
 
     #[test]
-    fn hosts_override_resolves_before_network_resolver() {
+    fn hosts_parser_supports_hosts_and_domain_only_lines() {
+        let table = HostsTable::parse(
+            "127.0.0.1 localhost\n0.0.0.0 ads.example tracker.example # block\n::1 ip6.local\n",
+        )
+        .unwrap();
+        assert_eq!(table.resolve("ads.example").unwrap(), vec!["0.0.0.0".parse::<IpAddr>().unwrap()]);
+        assert_eq!(table.len(), 4);
+    }
+
+    #[test]
+    fn invalid_host_line_fails_closed() {
+        let error = HostsTable::parse("not-an-ip ads.example\n").unwrap_err();
+        assert_eq!(error.kind(), DnsErrorKind::HostsParse);
+    }
+
+    #[test]
+    fn hosts_precede_resolvers() {
         let hosts = HostsTable::parse("203.0.113.9 service.example\n").unwrap();
-        let resolver = Arc::new(StaticResolver::failure());
-        let engine =
-            DnsEngine::with_resolvers(hosts, vec![resolver.clone()], 16, Duration::from_secs(60))
-                .unwrap();
-        assert_eq!(
-            engine.resolve("SERVICE.EXAMPLE.").unwrap(),
-            vec!["203.0.113.9".parse::<IpAddr>().unwrap()]
-        );
+        let resolver = Arc::new(StaticResolver::success("198.51.100.1"));
+        let engine = DnsEngine::with_resolvers(
+            hosts,
+            vec![resolver.clone()],
+            16,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(engine.resolve("service.example").unwrap(), vec!["203.0.113.9".parse::<IpAddr>().unwrap()]);
         assert_eq!(resolver.calls.load(Ordering::Relaxed), 0);
         assert_eq!(engine.stats().hosts_hits, 1);
     }
 
     #[test]
-    fn successful_resolution_is_cached() {
-        let resolver = Arc::new(StaticResolver::success("198.51.100.8"));
+    fn cache_precedes_resolver_after_first_lookup() {
+        let resolver = Arc::new(StaticResolver::success("198.51.100.7"));
         let engine = DnsEngine::with_resolvers(
             HostsTable::default(),
             vec![resolver.clone()],
@@ -555,8 +567,8 @@ mod tests {
             Duration::from_secs(60),
         )
         .unwrap();
-        assert_eq!(engine.resolve("cache.example").unwrap().len(), 1);
-        assert_eq!(engine.resolve("cache.example").unwrap().len(), 1);
+        assert_eq!(engine.resolve("cache.example").unwrap(), vec!["198.51.100.7".parse::<IpAddr>().unwrap()]);
+        assert_eq!(engine.resolve("cache.example").unwrap(), vec!["198.51.100.7".parse::<IpAddr>().unwrap()]);
         assert_eq!(resolver.calls.load(Ordering::Relaxed), 1);
         assert_eq!(engine.stats().cache_hits, 1);
     }
@@ -582,45 +594,36 @@ mod tests {
 
     #[test]
     fn resolver_failure_falls_through_to_next_resolver() {
-        let failed = Arc::new(StaticResolver::failure());
-        let working = Arc::new(StaticResolver::success("192.0.2.44"));
+        let failing = Arc::new(StaticResolver::failure());
+        let success = Arc::new(StaticResolver::success("192.0.2.44"));
         let engine = DnsEngine::with_resolvers(
             HostsTable::default(),
-            vec![failed.clone(), working.clone()],
+            vec![failing.clone(), success.clone()],
             16,
             Duration::from_secs(60),
         )
         .unwrap();
-        assert_eq!(
-            engine.resolve("fallback.example").unwrap(),
-            vec!["192.0.2.44".parse::<IpAddr>().unwrap()]
-        );
-        assert_eq!(failed.calls.load(Ordering::Relaxed), 1);
-        assert_eq!(working.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(engine.resolve("fallback.example").unwrap(), vec!["192.0.2.44".parse::<IpAddr>().unwrap()]);
+        assert_eq!(failing.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(success.calls.load(Ordering::Relaxed), 1);
         assert_eq!(engine.stats().resolver_failures, 1);
     }
 
     #[test]
-    fn hosts_parser_accepts_multiple_names_and_addresses() {
-        let mut hosts =
-            HostsTable::parse("127.0.0.1 localhost local.test\n::1 localhost local.test\n")
-                .unwrap();
-        let extra = HostsTable::parse("192.0.2.1 other.test\n").unwrap();
-        hosts.merge(extra);
-        assert_eq!(hosts.resolve("localhost").unwrap().len(), 2);
-        assert_eq!(hosts.resolve("local.test").unwrap().len(), 2);
-        assert_eq!(hosts.resolve("other.test").unwrap().len(), 1);
-    }
-
-    #[test]
-    fn invalid_hosts_name_is_classified_as_hosts_parse() {
-        let error = HostsTable::parse("127.0.0.1 bad..name\n").unwrap_err();
-        assert_eq!(error.kind(), DnsErrorKind::HostsParse);
-    }
-
-    #[test]
-    fn system_resolver_handles_localhost() {
-        let engine = DnsEngine::system(HostsTable::default());
-        assert!(!engine.resolve("localhost").unwrap().is_empty());
+    fn cache_configuration_is_bounded() {
+        assert!(DnsEngine::with_resolvers(
+            HostsTable::default(),
+            vec![Arc::new(SystemResolver)],
+            0,
+            Duration::from_secs(60),
+        )
+        .is_err());
+        assert!(DnsEngine::with_resolvers(
+            HostsTable::default(),
+            vec![Arc::new(SystemResolver)],
+            1,
+            MAX_CACHE_TTL + Duration::from_secs(1),
+        )
+        .is_err());
     }
 }
