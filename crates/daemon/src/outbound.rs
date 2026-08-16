@@ -1,8 +1,8 @@
 use std::{
     collections::HashMap,
     io::{self, Read, Write},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream},
-    time::{Duration, Instant},
+    net::{IpAddr, SocketAddr, TcpStream},
+    time::Duration,
 };
 
 use commeatus_core::{DestinationHost, Endpoint, EndpointId};
@@ -29,8 +29,8 @@ pub struct ProxyEndpointConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EndpointCapabilities {
-    pub tcp: bool,
-    pub udp: bool,
+    tcp: bool,
+    udp: bool,
 }
 
 impl EndpointCapabilities {
@@ -73,11 +73,6 @@ impl OutboundRegistry {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.endpoints.is_empty()
-    }
-
-    #[must_use]
     pub fn contains(&self, id: &EndpointId) -> bool {
         self.endpoints.contains_key(id)
     }
@@ -104,6 +99,16 @@ impl OutboundRegistry {
         target: &Target,
         dns: &DnsEngine,
     ) -> io::Result<TcpStream> {
+        if !self
+            .capabilities(endpoint)
+            .is_some_and(EndpointCapabilities::supports_tcp)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "selected outbound endpoint does not support TCP",
+            ));
+        }
+
         match endpoint {
             Endpoint::Direct => proxy::connect_direct(target, dns),
             Endpoint::Proxy(id) => {
@@ -139,6 +144,7 @@ fn finish_handshake(stream: TcpStream) -> io::Result<TcpStream> {
 fn connect_socks5(upstream: SocketAddr, target: &Target) -> io::Result<TcpStream> {
     let mut stream = connect_upstream(upstream)?;
     stream.write_all(&[0x05, 0x01, 0x00])?;
+    stream.flush()?;
     let mut method = [0_u8; 2];
     stream.read_exact(&mut method)?;
     if method != [0x05, 0x00] {
@@ -153,6 +159,7 @@ fn connect_socks5(upstream: SocketAddr, target: &Target) -> io::Result<TcpStream
     encode_socks_address(&mut request, &target.host)?;
     request.extend_from_slice(&target.port.to_be_bytes());
     stream.write_all(&request)?;
+    stream.flush()?;
 
     let mut reply = [0_u8; 4];
     stream.read_exact(&mut reply)?;
@@ -297,6 +304,8 @@ fn target_authority(target: &Target) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
     use super::*;
 
     #[test]
@@ -316,15 +325,21 @@ mod tests {
     #[test]
     fn authority_preserves_domain_and_brackets_ipv6() {
         assert_eq!(
-            target_authority(&Target::new(DestinationHost::Domain("example.com".to_owned()), 443).unwrap()),
+            target_authority(
+                &Target::new(DestinationHost::Domain("example.com".to_owned()), 443).unwrap()
+            ),
             "example.com:443"
         );
         assert_eq!(
-            target_authority(&Target::new(DestinationHost::Ip(Ipv6Addr::LOCALHOST.into()), 443).unwrap()),
+            target_authority(
+                &Target::new(DestinationHost::Ip(Ipv6Addr::LOCALHOST.into()), 443).unwrap()
+            ),
             "[::1]:443"
         );
         assert_eq!(
-            target_authority(&Target::new(DestinationHost::Ip(Ipv4Addr::LOCALHOST.into()), 80).unwrap()),
+            target_authority(
+                &Target::new(DestinationHost::Ip(Ipv4Addr::LOCALHOST.into()), 80).unwrap()
+            ),
             "127.0.0.1:80"
         );
     }
