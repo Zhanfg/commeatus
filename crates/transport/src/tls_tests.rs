@@ -55,14 +55,19 @@ fn spawn_tls_echo() -> TestServer {
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let mut tls = StreamOwned::new(connection, socket);
             let mut buffer = [0_u8; 4096];
-            loop {
+            let clean_eof = loop {
                 let read = match tls.read(&mut buffer) {
-                    Ok(0) => break,
+                    Ok(0) => break true,
                     Ok(read) => read,
-                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break false,
                     Err(error) => return Err(error),
                 };
                 tls.write_all(&buffer[..read])?;
+                tls.flush()?;
+            };
+
+            if clean_eof {
+                tls.conn.send_close_notify();
                 tls.flush()?;
             }
             Ok(())
