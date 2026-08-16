@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+mod datagram;
 mod http_connect;
 mod outbound;
 mod protocol;
