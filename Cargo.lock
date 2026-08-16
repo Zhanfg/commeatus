@@ -42,6 +42,7 @@ dependencies = [
  "commeatus-dns",
  "commeatus-platform",
  "commeatus-transport",
+ "mio",
  "rcgen",
  "rustls",
  "sha2",
