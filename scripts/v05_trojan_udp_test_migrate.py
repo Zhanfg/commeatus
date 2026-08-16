@@ -30,6 +30,28 @@ replace_once(
     '            protocol: protocol::trojan(PASSWORD).unwrap(),',
     '            protocol: protocol::trojan_with_verifier(\n                crate::trojan::TrojanVerifier::new(PASSWORD).unwrap(),\n            ),',
 )
+replace_once(
+    "crates/daemon/src/config.rs",
+    "    fn trojan_tls_endpoint_compiles_as_encrypted_tcp_only() {",
+    "    fn trojan_tls_endpoint_compiles_with_stream_and_datagram_capability() {",
+)
+replace_once(
+    "crates/daemon/src/config.rs",
+    '''        assert!(capabilities.supports_tcp());
+        assert!(!capabilities.supports_udp());
+        assert!(capabilities.encrypted_transport());
+    }
+
+    #[test]
+    fn trojan_plain_tcp_is_rejected_by_candidate_parser() {''',
+    '''        assert!(capabilities.supports_tcp());
+        assert!(capabilities.supports_udp());
+        assert!(capabilities.encrypted_transport());
+    }
+
+    #[test]
+    fn trojan_plain_tcp_is_rejected_by_candidate_parser() {''',
+)
 
 remaining = []
 for path in Path("crates/daemon/src").glob("*.rs"):
