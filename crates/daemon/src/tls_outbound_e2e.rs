@@ -142,7 +142,9 @@ fn spawn_tls_socks_proxy(
 
             let mut extra = [0_u8; 1];
             if tls.read(&mut extra)? != 0 {
-                return Err(io::Error::other("unexpected plaintext after TLS tunnel payload"));
+                return Err(io::Error::other(
+                    "unexpected plaintext after TLS tunnel payload",
+                ));
             }
             tls.conn.send_close_notify();
             tls.flush()?;
@@ -189,8 +191,8 @@ fn http_inbound_routes_socks_protocol_over_tls_without_local_dns() {
         Vec::new(),
         PolicyAction::Route(Endpoint::Proxy(id.clone())),
     )));
-    let transport = TlsTransport::with_client_config(tls_proxy, TLS_SERVER_NAME, client_config)
-        .unwrap();
+    let transport =
+        TlsTransport::with_client_config(tls_proxy, TLS_SERVER_NAME, client_config).unwrap();
     let outbounds = Arc::new(
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
@@ -200,14 +202,9 @@ fn http_inbound_routes_socks_protocol_over_tls_without_local_dns() {
         .unwrap(),
     );
     let dns = Arc::new(DnsEngine::system(HostsTable::default()));
-    let (inbound, inbound_thread) = spawn_test_listener_with_runtime(
-        ListenerProtocol::HttpConnect,
-        runtime,
-        dns,
-        outbounds,
-        1,
-    )
-    .unwrap();
+    let (inbound, inbound_thread) =
+        spawn_test_listener_with_runtime(ListenerProtocol::HttpConnect, runtime, dns, outbounds, 1)
+            .unwrap();
 
     let mut tunnel = connect_http_inbound(inbound, TARGET_DOMAIN, echo.port()).unwrap();
     tunnel.write_all(PAYLOAD).unwrap();
