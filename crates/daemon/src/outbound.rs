@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io};
+use std::{collections::HashMap, io, sync::Arc};
 
 use commeatus_core::{Endpoint, EndpointId};
 use commeatus_dns::DnsEngine;
@@ -8,6 +8,7 @@ use commeatus_transport::{
 };
 
 use crate::{
+    datagram::{DatagramExecution, DirectDatagramAssociation},
     protocol::ProtocolRef,
     proxy::{self, Target},
 };
@@ -169,12 +170,49 @@ impl OutboundRegistry {
             }
         }
     }
+
+    /// Open the concrete datagram execution path for an endpoint.
+    ///
+    /// This is the single factory authority used by inbound datagram
+    /// executors. DIRECT is implemented today. Registered proxy endpoints are
+    /// deliberately `Unsupported` until a real proxy datagram provider is
+    /// attached; callers must never substitute DIRECT for that error.
+    pub fn open_datagram(
+        &self,
+        endpoint: &Endpoint,
+        direct_dns: Arc<DnsEngine>,
+    ) -> io::Result<Box<dyn DatagramExecution>> {
+        match endpoint {
+            Endpoint::Direct => Ok(Box::new(DirectDatagramAssociation::new(direct_dns)?)),
+            Endpoint::Proxy(id) => {
+                if !self.endpoints.contains_key(id) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("proxy endpoint `{}` is not registered", id.as_str()),
+                    ));
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "proxy endpoint `{}` has no datagram execution provider",
+                        id.as_str()
+                    ),
+                ))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use commeatus_dns::HostsTable;
+
     use super::*;
     use crate::protocol;
+
+    fn dns() -> Arc<DnsEngine> {
+        Arc::new(DnsEngine::system(HostsTable::default()))
+    }
 
     #[test]
     fn provider_requirement_rejects_trojan_over_plain_tcp() {
@@ -216,5 +254,28 @@ mod tests {
         assert!(capabilities.supports_tcp());
         assert!(!capabilities.supports_udp());
         assert!(capabilities.encrypted_transport());
+    }
+
+    #[test]
+    fn datagram_factory_opens_direct_execution() {
+        let registry = OutboundRegistry::default();
+        let execution = registry.open_datagram(&Endpoint::Direct, dns()).unwrap();
+        assert!(execution.readiness_source_count() >= 1);
+    }
+
+    #[test]
+    fn datagram_factory_rejects_proxy_without_provider() {
+        let id = EndpointId::new("edge").unwrap();
+        let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
+            id: id.clone(),
+            protocol: protocol::socks5(),
+            transport: TransportConfig::Tcp(TcpTransport::new("127.0.0.1:1081".parse().unwrap())),
+        }])
+        .unwrap();
+        let error = registry
+            .open_datagram(&Endpoint::Proxy(id), dns())
+            .err()
+            .expect("proxy datagram factory unexpectedly succeeded");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 }
