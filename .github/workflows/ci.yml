@@ -26,6 +26,12 @@ jobs:
           components: rustfmt, clippy
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Protocol provider architecture guard
+        run: |
+          if grep -R --line-number --include='*.rs' 'ProxyProtocol' crates; then
+            echo 'central ProxyProtocol enum/reference is forbidden; add a provider instead' >&2
+            exit 1
+          fi
       - name: Check
         run: cargo check --workspace --all-targets --locked
       - name: Clippy

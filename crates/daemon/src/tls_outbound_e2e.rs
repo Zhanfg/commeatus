@@ -17,7 +17,8 @@ use rustls::{
 
 use crate::{
     config::ListenerProtocol,
-    outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig},
+    outbound::{OutboundRegistry, ProxyEndpointConfig, TransportConfig},
+    protocol,
     server::spawn_test_listener_with_runtime,
 };
 
@@ -196,7 +197,7 @@ fn http_inbound_routes_socks_protocol_over_tls_without_local_dns() {
     let outbounds = Arc::new(
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
-            protocol: ProxyProtocol::Socks5,
+            protocol: protocol::socks5(),
             transport: TransportConfig::Tls(transport),
         }])
         .unwrap(),

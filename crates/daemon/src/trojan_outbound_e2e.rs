@@ -18,9 +18,8 @@ use sha2::{Digest, Sha224};
 
 use crate::{
     config::ListenerProtocol,
-    outbound::{
-        OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig, TrojanProtocol,
-    },
+    outbound::{OutboundRegistry, ProxyEndpointConfig, TransportConfig},
+    protocol,
     server::spawn_test_listener_with_runtime,
 };
 
@@ -218,7 +217,7 @@ fn http_inbound_routes_native_trojan_over_verified_tls_without_local_dns() {
     let outbounds = Arc::new(
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
-            protocol: ProxyProtocol::Trojan(TrojanProtocol::new(PASSWORD).unwrap()),
+            protocol: protocol::trojan(PASSWORD).unwrap(),
             transport: TransportConfig::Tls(transport),
         }])
         .unwrap(),

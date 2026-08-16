@@ -3,6 +3,7 @@
 pub mod config;
 mod http_connect;
 mod outbound;
+mod protocol;
 mod proxy;
 pub mod server;
 mod socks5;

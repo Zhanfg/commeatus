@@ -14,8 +14,9 @@ use commeatus_core::{
 use commeatus_dns::{DnsEngine, HostsTable, MAX_HOSTS_BYTES};
 use commeatus_transport::{TcpTransport, TlsTransport};
 
-use crate::outbound::{
-    OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig, TrojanProtocol,
+use crate::{
+    outbound::{OutboundRegistry, ProxyEndpointConfig, TransportConfig},
+    protocol,
 };
 
 pub const MAX_CONFIG_BYTES: usize = 1024 * 1024;
@@ -294,39 +295,39 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
 
                 let (protocol, transport) = match fields.as_slice() {
                     ["endpoint", _, "socks5", address] => (
-                        ProxyProtocol::Socks5,
+                        protocol::socks5(),
                         TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
                             address,
                             line_number,
                         )?)),
                     ),
                     ["endpoint", _, "http", address] => (
-                        ProxyProtocol::HttpConnect,
+                        protocol::http_connect(),
                         TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
                             address,
                             line_number,
                         )?)),
                     ),
                     ["endpoint", _, "socks5", "tcp", address] => (
-                        ProxyProtocol::Socks5,
+                        protocol::socks5(),
                         TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
                             address,
                             line_number,
                         )?)),
                     ),
                     ["endpoint", _, "http", "tcp", address] => (
-                        ProxyProtocol::HttpConnect,
+                        protocol::http_connect(),
                         TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
                             address,
                             line_number,
                         )?)),
                     ),
                     ["endpoint", _, "socks5", "tls", address, server_name] => (
-                        ProxyProtocol::Socks5,
+                        protocol::socks5(),
                         parse_tls_transport(address, server_name, line_number)?,
                     ),
                     ["endpoint", _, "http", "tls", address, server_name] => (
-                        ProxyProtocol::HttpConnect,
+                        protocol::http_connect(),
                         parse_tls_transport(address, server_name, line_number)?,
                     ),
                     [
@@ -338,10 +339,8 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                         server_name,
                         password,
                     ] => (
-                        ProxyProtocol::Trojan(
-                            TrojanProtocol::new(password)
-                                .map_err(|error| ConfigError::at(line_number, error.to_string()))?,
-                        ),
+                        protocol::trojan(password)
+                            .map_err(|error| ConfigError::at(line_number, error.to_string()))?,
                         parse_tls_transport(address, server_name, line_number)?,
                     ),
                     ["endpoint", _, "trojan", ..] => {
