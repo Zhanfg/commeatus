@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-pub use tls::{TlsTransport, TlsTransportSession};
+pub use tls::{TlsFramedSession, TlsTransport, TlsTransportSession};
 
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
