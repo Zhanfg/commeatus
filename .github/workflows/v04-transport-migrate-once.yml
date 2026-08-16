@@ -34,8 +34,7 @@ jobs:
               text = p.read_text()
               if old not in text:
                   raise SystemExit(f"expected migration pattern missing in {path}: {old[:80]!r}")
-              text2 = text.replace(old, new, count)
-              p.write_text(text2)
+              p.write_text(text.replace(old, new, count))
 
           replace(
               "crates/daemon/src/config.rs",
@@ -68,6 +67,12 @@ jobs:
               "crates/daemon/src/outbound_e2e.rs",
               "        OutboundRegistry::new(vec![ProxyEndpointConfig {\n            id,\n            protocol,\n            address,\n        }])",
               "        OutboundRegistry::new(vec![ProxyEndpointConfig {\n            id,\n            protocol,\n            transport: TransportConfig::Tcp(TcpTransport::new(address)),\n        }])",
+          )
+
+          replace(
+              "crates/daemon/src/outbound.rs",
+              "    io::{self, Read, Write},\n",
+              "    io,\n",
           )
 
           p = Path("crates/daemon/src/proxy.rs")
