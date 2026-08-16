@@ -1,12 +1,13 @@
 use std::{
     collections::HashSet,
     io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket},
     sync::Arc,
 };
 
 use commeatus_core::DestinationHost;
 use commeatus_dns::DnsEngine;
+use mio::{Interest, Registry, Token, net::UdpSocket};
 
 use crate::proxy::{self, Target};
 
@@ -37,8 +38,9 @@ pub trait DatagramAssociation: Send {
 /// DIRECT datagram execution.
 ///
 /// DNS resolution and remote-peer ownership live here rather than in an
-/// inbound protocol. The association uses dedicated outbound sockets so the
-/// SOCKS5 client-facing relay socket is never also the public-network socket.
+/// inbound protocol. The association uses dedicated outbound UDP sockets so
+/// the SOCKS5 client-facing relay socket is never also the public-network
+/// socket.
 pub struct DirectDatagramAssociation {
     dns: Arc<DnsEngine>,
     ipv4: UdpSocket,
@@ -48,31 +50,47 @@ pub struct DirectDatagramAssociation {
 
 impl DirectDatagramAssociation {
     pub fn new(dns: Arc<DnsEngine>) -> io::Result<Self> {
-        let ipv4 = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
-        ipv4.set_nonblocking(true)?;
+        let ipv4 = bind_nonblocking(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
+        let ipv6 = match bind_nonblocking(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0))) {
+            Ok(socket) => Some(socket),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AddrNotAvailable | io::ErrorKind::Unsupported
+                ) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        };
         Ok(Self {
             dns,
             ipv4,
-            ipv6: None,
+            ipv6,
             remote_peers: HashSet::new(),
         })
     }
 
-    #[must_use]
-    pub fn remote_peer_count(&self) -> usize {
-        self.remote_peers.len()
+    /// Register DIRECT carrier sockets with an executor-owned poll registry.
+    ///
+    /// Readiness is intentionally not part of `DatagramAssociation`: other
+    /// protocol/carrier combinations may expose very different event sources.
+    pub fn register_readiness(
+        &mut self,
+        registry: &Registry,
+        ipv4_token: Token,
+        ipv6_token: Token,
+    ) -> io::Result<()> {
+        registry.register(&mut self.ipv4, ipv4_token, Interest::READABLE)?;
+        if let Some(ipv6) = &mut self.ipv6 {
+            registry.register(ipv6, ipv6_token, Interest::READABLE)?;
+        }
+        Ok(())
     }
 
-    fn ensure_ipv6(&mut self) -> io::Result<&UdpSocket> {
-        if self.ipv6.is_none() {
-            let socket = UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))?;
-            socket.set_nonblocking(true)?;
-            self.ipv6 = Some(socket);
-        }
-        Ok(self
-            .ipv6
-            .as_ref()
-            .expect("IPv6 socket was just initialized"))
+    #[cfg(test)]
+    fn remote_peer_count(&self) -> usize {
+        self.remote_peers.len()
     }
 
     fn send_to_resolved(&mut self, address: SocketAddr, payload: &[u8]) -> io::Result<()> {
@@ -89,7 +107,16 @@ impl DirectDatagramAssociation {
 
         let sent = match address {
             SocketAddr::V4(_) => self.ipv4.send_to(payload, address),
-            SocketAddr::V6(_) => self.ensure_ipv6()?.send_to(payload, address),
+            SocketAddr::V6(_) => self
+                .ipv6
+                .as_ref()
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::AddrNotAvailable,
+                        "IPv6 datagram socket is unavailable on this platform",
+                    )
+                })?
+                .send_to(payload, address),
         }?;
         if sent != payload.len() {
             return Err(io::Error::new(
@@ -130,6 +157,12 @@ impl DirectDatagramAssociation {
     fn ipv4_local_addr(&self) -> io::Result<SocketAddr> {
         self.ipv4.local_addr()
     }
+}
+
+fn bind_nonblocking(address: SocketAddr) -> io::Result<UdpSocket> {
+    let socket = StdUdpSocket::bind(address)?;
+    socket.set_nonblocking(true)?;
+    Ok(UdpSocket::from_std(socket))
 }
 
 impl DatagramAssociation for DirectDatagramAssociation {
@@ -173,7 +206,7 @@ impl DatagramAssociation for DirectDatagramAssociation {
 #[cfg(test)]
 mod tests {
     use std::{
-        net::UdpSocket,
+        net::{IpAddr, UdpSocket},
         thread,
         time::{Duration, Instant},
     };
