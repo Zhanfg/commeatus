@@ -10,5 +10,6 @@ description = "Commeatus proxy daemon and command-line interface"
 [dependencies]
 commeatus-core = { path = "../core", version = "=0.3.0-alpha.1" }
 commeatus-dns = { path = "../dns", version = "=0.3.0-alpha.1" }
+commeatus-transport = { path = "../transport", version = "=0.3.0-alpha.1" }
 commeatus-compat = { path = "../compat", version = "=0.3.0-alpha.1" }
 commeatus-platform = { path = "../platform", version = "=0.3.0-alpha.1" }
