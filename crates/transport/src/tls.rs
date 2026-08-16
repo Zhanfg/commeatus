@@ -6,14 +6,11 @@ use std::{
 };
 
 use mio::{Events, Interest, Poll, Token};
-use rustls::{
-    ClientConfig, ClientConnection, RootCertStore,
-    pki_types::ServerName,
-};
+use rustls::{ClientConfig, ClientConnection, RootCertStore, pki_types::ServerName};
 
 use crate::{
-    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, TransportCapabilities,
-    TransportConnector, TransportSession,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_HANDSHAKE_TIMEOUT, TransportCapabilities, TransportConnector,
+    TransportSession,
 };
 
 const CLIENT: Token = Token(0);
