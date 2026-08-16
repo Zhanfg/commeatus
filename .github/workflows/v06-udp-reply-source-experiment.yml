@@ -1,0 +1,48 @@
+name: v0.6 one-shot transparent UDP reply-source experiment
+
+on:
+  push:
+    branches:
+      - feat/v0.6-android-root-tproxy-udp
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prove nonlocal transparent UDP bind preserves source IP and port
+        shell: bash
+        run: |
+          set -euo pipefail
+          ns="udp-src-$RANDOM-$$"
+          cleanup() {
+            sudo ip netns del "$ns" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT INT TERM
+          sudo ip netns add "$ns"
+          sudo ip -n "$ns" link set lo up
+          sudo ip -n "$ns" addr add 10.203.0.1/32 dev lo
+
+          sudo ip netns exec "$ns" python3 - <<'PY'
+          import socket, threading, time
+
+          client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          client.bind(("10.203.0.1", 0))
+          client.settimeout(3)
+          client_addr = client.getsockname()
+
+          sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          IP_TRANSPARENT = 19
+          sender.setsockopt(socket.SOL_IP, IP_TRANSPARENT, 1)
+          sender.bind(("198.51.100.77", 43123))
+          sent = sender.sendto(b"source-proof", client_addr)
+          assert sent == len(b"source-proof")
+
+          data, source = client.recvfrom(65535)
+          assert data == b"source-proof", data
+          assert source == ("198.51.100.77", 43123), source
+          print("transparent-udp-reply-source: PASS", source)
+          PY
