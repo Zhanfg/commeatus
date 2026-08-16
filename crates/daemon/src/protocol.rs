@@ -181,9 +181,7 @@ impl TrojanProtocol {
         if password.is_empty() || password.len() > MAX_TROJAN_PASSWORD_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!(
-                    "Trojan password must contain 1..={MAX_TROJAN_PASSWORD_BYTES} UTF-8 bytes"
-                ),
+                format!("Trojan password must contain 1..={MAX_TROJAN_PASSWORD_BYTES} UTF-8 bytes"),
             ));
         }
 
@@ -215,8 +213,7 @@ impl OutboundProtocol for TrojanProtocol {
         session: &mut dyn TransportSession,
         target: &Target,
     ) -> io::Result<()> {
-        let mut request =
-            Vec::with_capacity(TROJAN_PASSWORD_HASH_BYTES + 2 + 1 + 1 + 253 + 2 + 2);
+        let mut request = Vec::with_capacity(TROJAN_PASSWORD_HASH_BYTES + 2 + 1 + 1 + 253 + 2 + 2);
         request.extend_from_slice(&self.password_hash);
         request.extend_from_slice(b"\r\n");
         request.push(0x01); // CONNECT

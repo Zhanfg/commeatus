@@ -12,7 +12,8 @@ use commeatus_transport::TcpTransport;
 
 use crate::{
     config::ListenerProtocol,
-    outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig},
+    outbound::{OutboundRegistry, ProxyEndpointConfig, TransportConfig},
+    protocol::{self, ProtocolRef},
     server::spawn_test_listener_with_runtime,
 };
 
@@ -199,7 +200,7 @@ fn proxy_runtime(id: EndpointId) -> Arc<Runtime> {
     )))
 }
 
-fn registry(id: EndpointId, protocol: ProxyProtocol, address: SocketAddr) -> Arc<OutboundRegistry> {
+fn registry(id: EndpointId, protocol: ProtocolRef, address: SocketAddr) -> Arc<OutboundRegistry> {
     Arc::new(
         OutboundRegistry::new(vec![ProxyEndpointConfig {
             id,
@@ -299,7 +300,7 @@ fn socks_inbound_routes_through_named_socks_outbound_without_local_dns() {
         ListenerProtocol::Socks5,
         proxy_runtime(id.clone()),
         dns(),
-        registry(id, ProxyProtocol::Socks5, upstream),
+        registry(id, protocol::socks5(), upstream),
         1,
     )
     .unwrap();
@@ -322,7 +323,7 @@ fn http_inbound_routes_through_named_http_outbound_without_local_dns() {
         ListenerProtocol::HttpConnect,
         proxy_runtime(id.clone()),
         dns(),
-        registry(id, ProxyProtocol::HttpConnect, upstream),
+        registry(id, protocol::http_connect(), upstream),
         1,
     )
     .unwrap();
