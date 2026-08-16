@@ -3,7 +3,8 @@ use std::{collections::HashMap, io, net::IpAddr};
 use commeatus_core::{DestinationHost, Endpoint, EndpointId};
 use commeatus_dns::DnsEngine;
 use commeatus_transport::{
-    TcpTransport, TcpTransportSession, TransportCapabilities, TransportConnector, TransportSession,
+    TcpTransport, TcpTransportSession, TlsTransport, TransportCapabilities, TransportConnector,
+    TransportSession,
 };
 
 use crate::proxy::{self, Target};
@@ -16,9 +17,10 @@ pub enum ProxyProtocol {
     HttpConnect,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum TransportConfig {
     Tcp(TcpTransport),
+    Tls(TlsTransport),
 }
 
 impl TransportConfig {
@@ -26,17 +28,19 @@ impl TransportConfig {
     fn capabilities(&self) -> TransportCapabilities {
         match self {
             Self::Tcp(transport) => transport.capabilities(),
+            Self::Tls(transport) => transport.capabilities(),
         }
     }
 
     fn connect(&self) -> io::Result<Box<dyn TransportSession>> {
         match self {
             Self::Tcp(transport) => transport.connect(),
+            Self::Tls(transport) => transport.connect(),
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ProxyEndpointConfig {
     pub id: EndpointId,
     pub protocol: ProxyProtocol,
@@ -342,6 +346,22 @@ mod tests {
         assert!(capabilities.supports_tcp());
         assert!(!capabilities.supports_udp());
         assert!(!capabilities.encrypted_transport());
+    }
+
+    #[test]
+    fn tls_capability_comes_from_transport_not_protocol() {
+        let id = EndpointId::new("secure").unwrap();
+        let tls = TlsTransport::webpki("127.0.0.1:443".parse().unwrap(), "proxy.example").unwrap();
+        let registry = OutboundRegistry::new(vec![ProxyEndpointConfig {
+            id: id.clone(),
+            protocol: ProxyProtocol::HttpConnect,
+            transport: TransportConfig::Tls(tls),
+        }])
+        .unwrap();
+        let capabilities = registry.capabilities(&Endpoint::Proxy(id)).unwrap();
+        assert!(capabilities.supports_tcp());
+        assert!(!capabilities.supports_udp());
+        assert!(capabilities.encrypted_transport());
     }
 
     #[test]
