@@ -297,14 +297,9 @@ fn socks5_udp_routes_native_trojan_over_verified_tls_without_local_dns() {
         .unwrap(),
     );
     let dns = Arc::new(DnsEngine::system(HostsTable::default()));
-    let (inbound, inbound_thread) = spawn_test_listener_with_runtime(
-        ListenerProtocol::Socks5,
-        runtime,
-        dns,
-        outbounds,
-        1,
-    )
-    .unwrap();
+    let (inbound, inbound_thread) =
+        spawn_test_listener_with_runtime(ListenerProtocol::Socks5, runtime, dns, outbounds, 1)
+            .unwrap();
 
     let (control, relay) = associate_socks5_udp(inbound).unwrap();
     let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
