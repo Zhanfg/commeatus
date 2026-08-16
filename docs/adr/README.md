@@ -14,3 +14,4 @@ ADRs that supersede or amend earlier ones.
 - [ADR-0006: Trojan Is a Protocol over Verified TLS](0006-trojan-is-a-protocol-over-tls.md)
 - [ADR-0007: Protocol Providers Own Handshakes](0007-protocol-providers-own-handshakes.md)
 - [ADR-0008: Datagram Associations Are Logical Sessions](0008-datagram-associations-are-logical-sessions.md)
+- [ADR-0009: Outbound Registry Owns Datagram Execution](0009-outbound-registry-owns-datagram-execution.md)

@@ -49,13 +49,12 @@ impl fmt::Display for EndpointIdError {
 impl std::error::Error for EndpointIdError {}
 
 /// A concrete egress target. Actions are deliberately not represented here.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Endpoint {
     Direct,
     Proxy(EndpointId),
 }
 
-/// Why a flow was rejected. This remains an action outcome, not an endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RejectReason {
     Policy,
