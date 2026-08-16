@@ -29,6 +29,16 @@ jobs:
       - name: Apply transparent UDP implementation
         run: |
           python3 scripts/v06_tproxy_udp_apply.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('crates/daemon/src/transparent_udp.rs')
+          text = p.read_text()
+          old = 'net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket as StdUdpSocket},'
+          new = 'net::{SocketAddr, UdpSocket as StdUdpSocket},'
+          if text.count(old) != 1:
+              raise SystemExit(f'unexpected transparent UDP import shape: {text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+          PY
           test -f crates/daemon/src/transparent_udp.rs
           test -f scripts/android-root-tproxy.sh
           test -f examples/android-root-tproxy.conf
