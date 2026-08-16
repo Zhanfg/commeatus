@@ -5,15 +5,23 @@ use std::{
     time::Duration,
 };
 
-use commeatus_core::{DestinationHost, Runtime, TransportProtocol};
+use commeatus_core::{ExecutionAction, Runtime, TransportProtocol};
 use commeatus_dns::DnsEngine;
 
-use crate::proxy::{self, Authorization, Target};
+use crate::{
+    outbound::OutboundRegistry,
+    proxy::{self, Target},
+};
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>, dns: Arc<DnsEngine>) -> io::Result<()> {
+pub fn handle(
+    mut client: TcpStream,
+    runtime: Arc<Runtime>,
+    dns: Arc<DnsEngine>,
+    outbounds: Arc<OutboundRegistry>,
+) -> io::Result<()> {
     client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
@@ -27,14 +35,17 @@ pub fn handle(mut client: TcpStream, runtime: Arc<Runtime>, dns: Arc<DnsEngine>)
         }
     };
 
-    if proxy::authorize(&runtime, &target, TransportProtocol::Tcp) == Authorization::Reject {
-        client.write_all(
-            b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-        )?;
-        return Ok(());
-    }
+    let endpoint = match proxy::plan_action(&runtime, &target, TransportProtocol::Tcp) {
+        ExecutionAction::Reject { .. } => {
+            client.write_all(
+                b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            )?;
+            return Ok(());
+        }
+        ExecutionAction::Route { endpoint } => endpoint,
+    };
 
-    let mut remote = match proxy::connect_direct(&target, &dns) {
+    let mut remote = match outbounds.connect_tcp(&endpoint, &target, &dns) {
         Ok(remote) => remote,
         Err(error) => {
             let _ = client.write_all(
@@ -123,7 +134,7 @@ fn parse_authority(authority: &str) -> io::Result<Target> {
         if !address.is_ipv6() {
             return Err(invalid_data("bracketed CONNECT address must be IPv6"));
         }
-        return Target::new(DestinationHost::Ip(address), parse_port(port)?);
+        return Target::new(commeatus_core::DestinationHost::Ip(address), parse_port(port)?);
     }
 
     let (host, port) = authority
@@ -134,13 +145,13 @@ fn parse_authority(authority: &str) -> io::Result<Target> {
     }
 
     let destination = if let Ok(address) = host.parse::<IpAddr>() {
-        DestinationHost::Ip(address)
+        commeatus_core::DestinationHost::Ip(address)
     } else {
         let domain = host.trim_end_matches('.').to_ascii_lowercase();
         if domain.is_empty() || domain.len() > 253 {
             return Err(invalid_data("invalid CONNECT domain"));
         }
-        DestinationHost::Domain(domain)
+        commeatus_core::DestinationHost::Domain(domain)
     };
     Target::new(destination, parse_port(port)?)
 }
@@ -168,6 +179,8 @@ fn invalid_data(message: &'static str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use commeatus_core::DestinationHost;
+
     use super::*;
 
     #[test]
