@@ -460,10 +460,7 @@ fn parse_action(value: &str, line: usize) -> Result<ParsedAction, ConfigError> {
             })?;
             let id = EndpointId::new(value.to_owned())
                 .map_err(|error| ConfigError::at(line, error.to_string()))?;
-            (
-                PolicyAction::Route(Endpoint::Proxy(id.clone())),
-                Some(id),
-            )
+            (PolicyAction::Route(Endpoint::Proxy(id.clone())), Some(id))
         }
     };
     Ok(ParsedAction { action, proxy_ref })

@@ -6,9 +6,7 @@ use std::{
     time::Duration,
 };
 
-use commeatus_core::{
-    DestinationHost, Endpoint, EndpointId, PolicyAction, PolicyEngine, Runtime,
-};
+use commeatus_core::{DestinationHost, Endpoint, EndpointId, PolicyAction, PolicyEngine, Runtime};
 use commeatus_dns::{DnsEngine, HostsTable};
 
 use crate::{
@@ -63,7 +61,9 @@ fn read_socks_target(stream: &mut TcpStream) -> io::Result<(String, u16)> {
     let mut header = [0_u8; 4];
     stream.read_exact(&mut header)?;
     if header[..3] != [0x05, 0x01, 0x00] {
-        return Err(io::Error::other("unexpected upstream SOCKS5 CONNECT header"));
+        return Err(io::Error::other(
+            "unexpected upstream SOCKS5 CONNECT header",
+        ));
     }
     let host = match header[3] {
         0x01 => {
@@ -206,9 +206,14 @@ fn negotiate_inbound_socks(proxy: SocketAddr) -> io::Result<TcpStream> {
     Ok(stream)
 }
 
-fn connect_inbound_socks_domain(proxy: SocketAddr, domain: &str, port: u16) -> io::Result<TcpStream> {
+fn connect_inbound_socks_domain(
+    proxy: SocketAddr,
+    domain: &str,
+    port: u16,
+) -> io::Result<TcpStream> {
     let mut stream = negotiate_inbound_socks(proxy)?;
-    let length = u8::try_from(domain.len()).map_err(|_| io::Error::other("test domain too long"))?;
+    let length =
+        u8::try_from(domain.len()).map_err(|_| io::Error::other("test domain too long"))?;
     let mut request = vec![0x05, 0x01, 0x00, 0x03, length];
     request.extend_from_slice(domain.as_bytes());
     request.extend_from_slice(&port.to_be_bytes());
@@ -313,5 +318,8 @@ fn http_inbound_routes_through_named_http_outbound_without_local_dns() {
 #[test]
 fn proxy_endpoint_domain_is_not_resolved_by_local_dns_before_upstream() {
     let host = DestinationHost::Domain(UPSTREAM_ONLY_DOMAIN.to_owned());
-    assert_eq!(host, DestinationHost::Domain(UPSTREAM_ONLY_DOMAIN.to_owned()));
+    assert_eq!(
+        host,
+        DestinationHost::Domain(UPSTREAM_ONLY_DOMAIN.to_owned())
+    );
 }

@@ -269,7 +269,16 @@ pub(crate) fn spawn_test_listener_with_runtime(
     let address = listener.local_addr()?;
     let handle = thread::Builder::new()
         .name("commeatus-test-listener".to_owned())
-        .spawn(move || serve_n(listener, protocol, runtime, dns, outbounds, connection_count))?;
+        .spawn(move || {
+            serve_n(
+                listener,
+                protocol,
+                runtime,
+                dns,
+                outbounds,
+                connection_count,
+            )
+        })?;
     Ok((address, handle))
 }
 

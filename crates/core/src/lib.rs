@@ -26,8 +26,8 @@ pub use flow::{
     TransportProtocol,
 };
 pub use plan::{
-    Endpoint, EndpointId, EndpointIdError, ExecutionAction, ExecutionPlan, RejectReason,
-    MAX_ENDPOINT_ID_LENGTH,
+    Endpoint, EndpointId, EndpointIdError, ExecutionAction, ExecutionPlan, MAX_ENDPOINT_ID_LENGTH,
+    RejectReason,
 };
 pub use policy::{
     Matcher, PolicyAction, PolicyDecision, PolicyEngine, PolicyRule, PolicyTier, RuleId,

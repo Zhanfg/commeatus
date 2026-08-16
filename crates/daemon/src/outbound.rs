@@ -172,7 +172,10 @@ fn connect_socks5(upstream: SocketAddr, target: &Target) -> io::Result<TcpStream
     if reply[1] != 0x00 {
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
-            format!("upstream SOCKS5 CONNECT failed with reply code {}", reply[1]),
+            format!(
+                "upstream SOCKS5 CONNECT failed with reply code {}",
+                reply[1]
+            ),
         ));
     }
     discard_socks_address(&mut stream, reply[3])?;

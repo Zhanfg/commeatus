@@ -134,7 +134,10 @@ fn parse_authority(authority: &str) -> io::Result<Target> {
         if !address.is_ipv6() {
             return Err(invalid_data("bracketed CONNECT address must be IPv6"));
         }
-        return Target::new(commeatus_core::DestinationHost::Ip(address), parse_port(port)?);
+        return Target::new(
+            commeatus_core::DestinationHost::Ip(address),
+            parse_port(port)?,
+        );
     }
 
     let (host, port) = authority
