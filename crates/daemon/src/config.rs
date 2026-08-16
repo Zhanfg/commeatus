@@ -14,7 +14,9 @@ use commeatus_core::{
 use commeatus_dns::{DnsEngine, HostsTable, MAX_HOSTS_BYTES};
 use commeatus_transport::{TcpTransport, TlsTransport};
 
-use crate::outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig};
+use crate::outbound::{
+    OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig, TrojanProtocol,
+};
 
 pub const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 pub const MAX_RULES: usize = 4096;
@@ -278,63 +280,84 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                         format!("proxy endpoint count exceeds {MAX_PROXY_ENDPOINTS}"),
                     ));
                 }
-                let id = fields
-                    .get(1)
-                    .ok_or_else(|| {
-                        ConfigError::at(
-                            line_number,
-                            "endpoint syntax is `endpoint <id> <socks5|http> [tcp] <ip:port>` or `endpoint <id> <socks5|http> tls <ip:port> <server-name>`",
-                        )
-                    })?;
+                let id = fields.get(1).ok_or_else(|| {
+                    ConfigError::at(
+                        line_number,
+                        "endpoint requires an id, protocol and transport configuration",
+                    )
+                })?;
                 let id = EndpointId::new((*id).to_owned())
                     .map_err(|error| ConfigError::at(line_number, error.to_string()))?;
                 if !endpoint_ids.insert(id.clone()) {
                     return Err(ConfigError::at(line_number, "duplicate proxy endpoint id"));
                 }
-                let protocol = match fields.get(2).copied() {
-                    Some("socks5") => ProxyProtocol::Socks5,
-                    Some("http") => ProxyProtocol::HttpConnect,
+
+                let (protocol, transport) = match fields.as_slice() {
+                    ["endpoint", _, "socks5", address] => (
+                        ProxyProtocol::Socks5,
+                        TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
+                            address,
+                            line_number,
+                        )?)),
+                    ),
+                    ["endpoint", _, "http", address] => (
+                        ProxyProtocol::HttpConnect,
+                        TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
+                            address,
+                            line_number,
+                        )?)),
+                    ),
+                    ["endpoint", _, "socks5", "tcp", address] => (
+                        ProxyProtocol::Socks5,
+                        TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
+                            address,
+                            line_number,
+                        )?)),
+                    ),
+                    ["endpoint", _, "http", "tcp", address] => (
+                        ProxyProtocol::HttpConnect,
+                        TransportConfig::Tcp(TcpTransport::new(parse_proxy_address(
+                            address,
+                            line_number,
+                        )?)),
+                    ),
+                    ["endpoint", _, "socks5", "tls", address, server_name] => (
+                        ProxyProtocol::Socks5,
+                        parse_tls_transport(address, server_name, line_number)?,
+                    ),
+                    ["endpoint", _, "http", "tls", address, server_name] => (
+                        ProxyProtocol::HttpConnect,
+                        parse_tls_transport(address, server_name, line_number)?,
+                    ),
+                    [
+                        "endpoint",
+                        _,
+                        "trojan",
+                        "tls",
+                        address,
+                        server_name,
+                        password,
+                    ] => (
+                        ProxyProtocol::Trojan(
+                            TrojanProtocol::new(password)
+                                .map_err(|error| ConfigError::at(line_number, error.to_string()))?,
+                        ),
+                        parse_tls_transport(address, server_name, line_number)?,
+                    ),
+                    ["endpoint", _, "trojan", ..] => {
+                        return Err(ConfigError::at(
+                            line_number,
+                            "Trojan endpoint syntax is `endpoint <id> trojan tls <ip:port> <server-name> <password>`; plain TCP is forbidden",
+                        ));
+                    }
                     _ => {
                         return Err(ConfigError::at(
                             line_number,
-                            "endpoint protocol must be `socks5` or `http`",
+                            "endpoint syntax supports SOCKS5/HTTP over implicit TCP, explicit TCP or TLS, and Trojan over TLS only",
                         ));
                     }
                 };
 
-                let (transport_name, address_value, server_name) = match fields.as_slice() {
-                    ["endpoint", _, _, address] => ("tcp", *address, None),
-                    ["endpoint", _, _, "tcp", address] => ("tcp", *address, None),
-                    ["endpoint", _, _, "tls", address, server_name] => {
-                        ("tls", *address, Some(*server_name))
-                    }
-                    _ => {
-                        return Err(ConfigError::at(
-                            line_number,
-                            "endpoint syntax is `endpoint <id> <socks5|http> [tcp] <ip:port>` or `endpoint <id> <socks5|http> tls <ip:port> <server-name>`",
-                        ));
-                    }
-                };
-                let address: SocketAddr = address_value.parse().map_err(|_| {
-                    ConfigError::at(
-                        line_number,
-                        "proxy endpoint address must be an IP socket address",
-                    )
-                })?;
-                if address.port() == 0 {
-                    return Err(ConfigError::at(
-                        line_number,
-                        "proxy endpoint port must not be zero",
-                    ));
-                }
-                let transport = match transport_name {
-                    "tcp" => TransportConfig::Tcp(TcpTransport::new(address)),
-                    "tls" => TransportConfig::Tls(
-                        TlsTransport::webpki(address, server_name.expect("TLS syntax checked"))
-                            .map_err(|error| ConfigError::at(line_number, error.to_string()))?,
-                    ),
-                    _ => unreachable!(),
-                };
                 endpoint_configs.push(ProxyEndpointConfig {
                     id,
                     protocol,
@@ -558,6 +581,30 @@ fn parse_rule(fields: &[&str], line: usize, id: u64) -> Result<ParsedRule, Confi
         },
         proxy_ref: parsed_action.proxy_ref,
     })
+}
+
+fn parse_proxy_address(value: &str, line: usize) -> Result<SocketAddr, ConfigError> {
+    let address: SocketAddr = value.parse().map_err(|_| {
+        ConfigError::at(line, "proxy endpoint address must be an IP socket address")
+    })?;
+    if address.port() == 0 {
+        return Err(ConfigError::at(
+            line,
+            "proxy endpoint port must not be zero",
+        ));
+    }
+    Ok(address)
+}
+
+fn parse_tls_transport(
+    address: &str,
+    server_name: &str,
+    line: usize,
+) -> Result<TransportConfig, ConfigError> {
+    let address = parse_proxy_address(address, line)?;
+    TlsTransport::webpki(address, server_name)
+        .map(TransportConfig::Tls)
+        .map_err(|error| ConfigError::at(line, error.to_string()))
 }
 
 fn expect_fields(
@@ -916,6 +963,34 @@ mod tests {
             listen socks5 127.0.0.1:1080
             endpoint secure socks5 tls 127.0.0.1:8443 bad_name!
             default proxy:secure
+        "#;
+        assert!(parse_config(config).is_err());
+    }
+
+    #[test]
+    fn trojan_tls_endpoint_compiles_as_encrypted_tcp_only() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            endpoint secure trojan tls 127.0.0.1:443 trojan.example secret
+            default proxy:secure
+        "#;
+        let compiled = parse_config(config).unwrap();
+        assert_eq!(compiled.outbounds().len(), 1);
+        let endpoint = Endpoint::Proxy(EndpointId::new("secure").unwrap());
+        let capabilities = compiled.outbounds().capabilities(&endpoint).unwrap();
+        assert!(capabilities.supports_tcp());
+        assert!(!capabilities.supports_udp());
+        assert!(capabilities.encrypted_transport());
+    }
+
+    #[test]
+    fn trojan_plain_tcp_is_rejected_by_candidate_parser() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            endpoint insecure trojan tcp 127.0.0.1:443 secret
+            default proxy:insecure
         "#;
         assert!(parse_config(config).is_err());
     }

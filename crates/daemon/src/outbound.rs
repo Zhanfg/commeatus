@@ -24,9 +24,7 @@ impl TrojanProtocol {
         if password.is_empty() || password.len() > MAX_TROJAN_PASSWORD_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!(
-                    "Trojan password must contain 1..={MAX_TROJAN_PASSWORD_BYTES} UTF-8 bytes"
-                ),
+                format!("Trojan password must contain 1..={MAX_TROJAN_PASSWORD_BYTES} UTF-8 bytes"),
             ));
         }
 
@@ -121,7 +119,8 @@ impl OutboundRegistry {
     pub fn new(endpoints: Vec<ProxyEndpointConfig>) -> Result<Self, io::Error> {
         let mut registry = HashMap::with_capacity(endpoints.len());
         for endpoint in endpoints {
-            if matches!(&endpoint.protocol, ProxyProtocol::Trojan(_)) && !endpoint.transport.is_tls()
+            if matches!(&endpoint.protocol, ProxyProtocol::Trojan(_))
+                && !endpoint.transport.is_tls()
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -167,9 +166,7 @@ impl OutboundRegistry {
                 let transport = config.transport.capabilities();
                 let protocol_supports_stream = matches!(
                     &config.protocol,
-                    ProxyProtocol::Socks5
-                        | ProxyProtocol::HttpConnect
-                        | ProxyProtocol::Trojan(_)
+                    ProxyProtocol::Socks5 | ProxyProtocol::HttpConnect | ProxyProtocol::Trojan(_)
                 );
                 EndpointCapabilities {
                     tcp: protocol_supports_stream && transport.reliable_stream,

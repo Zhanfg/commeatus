@@ -18,7 +18,9 @@ use sha2::{Digest, Sha224};
 
 use crate::{
     config::ListenerProtocol,
-    outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig, TrojanProtocol},
+    outbound::{
+        OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig, TrojanProtocol,
+    },
     server::spawn_test_listener_with_runtime,
 };
 
@@ -160,7 +162,9 @@ fn spawn_trojan_server(
 
             let mut extra = [0_u8; 1];
             if tls.read(&mut extra)? != 0 {
-                return Err(io::Error::other("unexpected Trojan payload after client half-close"));
+                return Err(io::Error::other(
+                    "unexpected Trojan payload after client half-close",
+                ));
             }
             tls.conn.send_close_notify();
             tls.flush()?;
@@ -191,7 +195,9 @@ fn connect_http_inbound(proxy: SocketAddr, domain: &str, port: u16) -> io::Resul
         head.push(byte[0]);
     }
     if !head.starts_with(b"HTTP/1.1 200") {
-        return Err(io::Error::other("HTTP inbound did not establish Trojan tunnel"));
+        return Err(io::Error::other(
+            "HTTP inbound did not establish Trojan tunnel",
+        ));
     }
     Ok(stream)
 }
@@ -218,14 +224,9 @@ fn http_inbound_routes_native_trojan_over_verified_tls_without_local_dns() {
         .unwrap(),
     );
     let dns = Arc::new(DnsEngine::system(HostsTable::default()));
-    let (inbound, inbound_thread) = spawn_test_listener_with_runtime(
-        ListenerProtocol::HttpConnect,
-        runtime,
-        dns,
-        outbounds,
-        1,
-    )
-    .unwrap();
+    let (inbound, inbound_thread) =
+        spawn_test_listener_with_runtime(ListenerProtocol::HttpConnect, runtime, dns, outbounds, 1)
+            .unwrap();
 
     let mut tunnel = connect_http_inbound(inbound, TARGET_DOMAIN, echo.port()).unwrap();
     tunnel.write_all(PAYLOAD).unwrap();
