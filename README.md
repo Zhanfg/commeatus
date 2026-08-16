@@ -4,7 +4,7 @@ Commeatus is a Rust proxy core and runtime built around a flow-centric policy mo
 
 The name comes from Latin *commeatus*: passage, free movement, traffic, and a route through which movement can occur.
 
-> **Status:** `0.5.0-alpha.1`. This is an experimental alpha, not a production-ready replacement for mihomo or sing-box. It has real TCP/UDP inbounds, native policy, compiled domain filtering, an isolated DNS engine, named proxy stream outbounds, native Trojan CONNECT and UDP ASSOCIATE over verified rustls TLS, Android arm64 builds, and a CI-verified eBPF prototype boundary.
+> **Status:** current `main` is **v0.6 development**; the latest public prerelease is `v0.5.0-alpha.1`. The tree remains experimental, not a production-ready replacement for mihomo or sing-box. Current main adds explicit verified DNS-over-TLS resolver chains on top of the v0.5 TCP/UDP, policy, Trojan, Android arm64, and eBPF prototype baseline.
 
 ## Project priorities
 
@@ -46,7 +46,7 @@ ExecutionAction
 
 `Reject` is an action, not a fake outbound. The core knows a proxy endpoint only by its validated opaque `EndpointId`; SOCKS5/HTTP protocol configuration and upstream addresses remain execution-layer data.
 
-## What works in 0.5.0-alpha.1
+## What works on current main
 
 ### Inbounds and direct data plane
 
@@ -233,9 +233,9 @@ Resource guards:
 - maximum 8 MiB per blocklist source
 - maximum 250,000 accepted entries per source compile
 
-### DNS failure domain
+### DNS failure domain and explicit secure resolver chains
 
-Direct domain resolution lives in `commeatus-dns`, not in SOCKS5 or HTTP handlers:
+Direct domain resolution lives in `commeatus-dns`, not in SOCKS5, HTTP, Trojan, or policy handlers:
 
 ```text
 Domain
@@ -245,29 +245,58 @@ Hosts override
 Bounded cache
   ↓ miss
 Ordered Resolver chain
-  ↓
-System Resolver   (current network resolver)
+  ├─ SystemResolver
+  └─ DotResolver → verified TlsTransport
 ```
 
-The DNS engine provides:
+Resolvers return a typed `DnsAnswer` internally so protocol-owned TTL metadata can reach cache policy without changing daemon callers. The public daemon-facing engine API still returns bounded IP address lists.
 
-- typed errors and statistics
+The DNS engine currently provides:
+
+- typed errors, answer metadata, and statistics
 - DNS hosts overrides
-- ordered resolver fallback abstraction
 - bounded 4,096-entry cache
-- 60-second default synthetic cache TTL
-- hard maximum cache TTL of 300 seconds
+- configured cache TTL as a hard maximum (300-second hard cap)
+- resolver-provided positive TTL handling
+- authoritative TTL=0 results that are usable but not cached
 - at most 16 returned addresses per resolution
+- ordered resolver fallback
+- bounded A/AAAA DNS wire parsing with transaction/question validation
+- bounded compression-pointer and CNAME-chain handling
+- verified persistent DNS-over-TLS using the existing rustls transport boundary
+- one local reconnect/retry after a dead DoT session
 - resolver failure isolation
 
-System DNS is still the only network resolver in `0.5.0-alpha.1`. DoH, DoT, DoQ and Fake-IP are future implementations behind the resolver boundary.
+Native resolver declarations are themselves the fallback chain:
 
-DNS hosts assets are separate from blocklists:
+```text
+# Secure-only: no hidden system fallback exists.
+resolver dot 1.1.1.1:853 cloudflare-dns.com
+
+# Optional explicit fallback, only if the user writes it:
+resolver system
+```
+
+Rules:
+
+- with **no** `resolver` directives, legacy configurations keep exactly one system resolver;
+- once any resolver directive exists, the daemon adds **nothing** implicitly;
+- a DoT-only chain is therefore secure-only;
+- `resolver system` enables system fallback only at its declared position;
+- DoT bootstrap must be a literal `IP:port`; the TLS server name is separate and verified through WebPKI;
+- at most 8 resolvers may be configured;
+- duplicate effective resolver declarations are rejected before candidate commit.
+
+This means a secure-resolver outage is visible unless the configuration explicitly authorizes another resolver. Availability does not silently override DNS privacy policy.
+
+DNS hosts assets remain separate from blocklists:
 
 ```text
 hosts ./dns/hosts.txt       # name → IP resolution override
 blocklist ./rules/ads.txt   # policy rejection source
 ```
+
+See `examples/dot-resolver.conf`, ADR-0013, and ADR-0014.
 
 ### Platform capability boundary
 
@@ -322,6 +351,7 @@ Validate verified TLS endpoint syntax:
 ```bash
 ./target/release/commeatus check --config examples/tls-proxy-outbound.conf
 ./target/release/commeatus check --config examples/trojan-outbound.conf
+./target/release/commeatus check --config examples/dot-resolver.conf
 ```
 
 Run:
@@ -374,6 +404,7 @@ Current guards include:
 - named proxy endpoints: 64
 - blocklists: 8
 - hosts files: 4
+- configured DNS resolvers: 8
 - hosts source: 4 MiB
 - parsed hosts names: 100,000
 - active TCP sessions: 256
@@ -403,7 +434,7 @@ All configured listener sockets must bind before service starts. Per-flow/sessio
 - live TPROXY installation
 - live eBPF loading, policy maps or redirection
 - Android KernelSU/Magisk module packaging
-- DoH, DoT, DoQ or Fake-IP
+- DoH, DoQ or Fake-IP
 - remote rule-provider refresh
 - Clash/mihomo/sing-box configuration import or compatible API
 - adaptive/Smart routing
@@ -446,6 +477,8 @@ The E2E suite includes real loopback coverage for:
 - HTTP inbound → native Trojan CONNECT → verified TLS mock, with `.invalid` target preservation
 - SOCKS5 UDP inbound → native Trojan UDP provider → verified framed TLS mock
 - Trojan UDP partial/coalesced frame handling and zero-length datagram delivery
+- verified DoT A+AAAA reuse over one real TLS connection and local reconnect after server close
+- native resolver-chain config tests proving DoT-only secure-only semantics and explicit ordered system fallback
 
 ## Repository layout
 
@@ -485,7 +518,7 @@ Accepted architecture decisions live in `docs/adr/`.
 
 After v0.5, the highest-value work is:
 
-1. secure DNS resolvers behind `commeatus-dns` (DoH/DoT first, then DoQ/Fake-IP semantics)
+1. DoH behind the same typed resolver boundary, then DoQ/Fake-IP semantics without weakening explicit fallback policy
 2. TPROXY backend with transactional attach/cleanup and safe fallback
 3. eBPF loader, read-only policy maps, atomic generations and fallback behavior
 4. additional native protocols behind the established provider boundaries (VLESS/Shadowsocks before QUIC-heavy transports)
