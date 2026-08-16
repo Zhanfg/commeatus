@@ -8,11 +8,11 @@ repository.workspace = true
 description = "Commeatus proxy daemon and command-line interface"
 
 [dependencies]
-commeatus-core = { path = "../core", version = "=0.3.0-alpha.1" }
-commeatus-dns = { path = "../dns", version = "=0.3.0-alpha.1" }
-commeatus-transport = { path = "../transport", version = "=0.3.0-alpha.1" }
-commeatus-compat = { path = "../compat", version = "=0.3.0-alpha.1" }
-commeatus-platform = { path = "../platform", version = "=0.3.0-alpha.1" }
+commeatus-core = { path = "../core", version = "=0.4.0-alpha.1" }
+commeatus-dns = { path = "../dns", version = "=0.4.0-alpha.1" }
+commeatus-transport = { path = "../transport", version = "=0.4.0-alpha.1" }
+commeatus-compat = { path = "../compat", version = "=0.4.0-alpha.1" }
+commeatus-platform = { path = "../platform", version = "=0.4.0-alpha.1" }
 
 [dev-dependencies]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
