@@ -30,7 +30,10 @@ impl fmt::Debug for DotResolver {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DotResolver")
-            .field("persistent_session", &self.state.lock().is_ok_and(|state| state.session.is_some()))
+            .field(
+                "persistent_session",
+                &self.state.lock().is_ok_and(|state| state.session.is_some()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -102,7 +105,9 @@ impl Resolver for DotResolver {
                         }
                     }
                     if let Some(answer_ttl) = answer.ttl() {
-                        ttl = Some(ttl.map_or(answer_ttl, |current: Duration| current.min(answer_ttl)));
+                        ttl = Some(
+                            ttl.map_or(answer_ttl, |current: Duration| current.min(answer_ttl)),
+                        );
                     }
                 }
                 Err(error) => last_error = Some(error),
@@ -145,12 +150,13 @@ impl DotState {
                 }
             }
 
-            let result = exchange_message(
-                self.session
-                    .as_mut()
-                    .expect("DoT session exists after successful connector return"),
-                request,
-            );
+            let Some(session) = self.session.as_mut() else {
+                last_error = Some(io::Error::other(
+                    "DNS-over-TLS connector returned without a usable session",
+                ));
+                continue;
+            };
+            let result = exchange_message(session, request);
             match result {
                 Ok(response) => return Ok(response),
                 Err(error) => {
@@ -206,7 +212,7 @@ fn exchange_message(
 mod tests {
     use std::{
         collections::VecDeque,
-        net::{Ipv4Addr, TcpStream},
+        net::{IpAddr, Ipv4Addr, TcpStream},
         sync::atomic::AtomicUsize,
     };
 
@@ -260,10 +266,7 @@ mod tests {
                 if self.incoming.len() < DOT_LENGTH_BYTES {
                     return Ok(());
                 }
-                let length = usize::from(u16::from_be_bytes([
-                    self.incoming[0],
-                    self.incoming[1],
-                ]));
+                let length = usize::from(u16::from_be_bytes([self.incoming[0], self.incoming[1]]));
                 let frame_end = DOT_LENGTH_BYTES + length;
                 if self.incoming.len() < frame_end {
                     return Ok(());
@@ -283,10 +286,7 @@ mod tests {
                 return Err(io::Error::other("scripted DNS query is truncated"));
             }
             let question_end = query.len();
-            let qtype = u16::from_be_bytes([
-                query[question_end - 4],
-                query[question_end - 3],
-            ]);
+            let qtype = u16::from_be_bytes([query[question_end - 4], query[question_end - 3]]);
             let mut response = Vec::new();
             response.extend_from_slice(&query[..2]);
             response.extend_from_slice(&(0x8000_u16 | 0x0100).to_be_bytes());
@@ -364,7 +364,9 @@ mod tests {
             ttl_aaaa: 45,
         });
         let resolver = DotResolver::with_connector(connector);
-        let answer = resolver.resolve(&DnsQuery::new("secure.example").unwrap()).unwrap();
+        let answer = resolver
+            .resolve(&DnsQuery::new("secure.example").unwrap())
+            .unwrap();
         assert_eq!(
             answer.addresses(),
             &[

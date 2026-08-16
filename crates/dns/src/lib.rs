@@ -6,10 +6,15 @@
 //! 2. bounded in-memory cache,
 //! 3. ordered resolver fallback.
 //!
-//! System DNS is the only network resolver in v0.2. DoH/DoT/DoQ can be added
-//! behind `Resolver` without changing proxy protocol handlers.
+//! System DNS remains the default resolver. Secure resolver providers attach
+//! behind `Resolver` without changing proxy protocol handlers or daemon callers.
 
 #![forbid(unsafe_code)]
+
+mod dot;
+mod wire;
+
+pub use dot::DotResolver;
 
 use std::{
     collections::HashMap,
@@ -36,6 +41,7 @@ pub enum DnsErrorKind {
     NoResolvers,
     NoRecords,
     ResolverFailure,
+    InvalidResponse,
     InvalidConfiguration,
 }
 
@@ -171,6 +177,39 @@ impl DnsQuery {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DnsAnswer {
+    addresses: Vec<IpAddr>,
+    ttl: Option<Duration>,
+}
+
+impl DnsAnswer {
+    pub fn new(addresses: Vec<IpAddr>, ttl: Option<Duration>) -> Result<Self, DnsError> {
+        let addresses = deduplicate_bounded(addresses);
+        if addresses.is_empty() {
+            return Err(DnsError::new(
+                DnsErrorKind::NoRecords,
+                "DNS answer contains no usable addresses",
+            ));
+        }
+        Ok(Self { addresses, ttl })
+    }
+
+    #[must_use]
+    pub fn addresses(&self) -> &[IpAddr] {
+        &self.addresses
+    }
+
+    #[must_use]
+    pub const fn ttl(&self) -> Option<Duration> {
+        self.ttl
+    }
+
+    fn into_parts(self) -> (Vec<IpAddr>, Option<Duration>) {
+        (self.addresses, self.ttl)
+    }
+}
+
 fn normalize_name(name: &str) -> Result<String, DnsError> {
     let name = name.trim_matches('.').to_ascii_lowercase();
     if name.is_empty()
@@ -186,14 +225,14 @@ fn normalize_name(name: &str) -> Result<String, DnsError> {
 }
 
 pub trait Resolver: Send + Sync {
-    fn resolve(&self, query: &DnsQuery) -> Result<Vec<IpAddr>, DnsError>;
+    fn resolve(&self, query: &DnsQuery) -> Result<DnsAnswer, DnsError>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemResolver;
 
 impl Resolver for SystemResolver {
-    fn resolve(&self, query: &DnsQuery) -> Result<Vec<IpAddr>, DnsError> {
+    fn resolve(&self, query: &DnsQuery) -> Result<DnsAnswer, DnsError> {
         let addresses = (query.name(), 0_u16).to_socket_addrs().map_err(|error| {
             DnsError::new(
                 DnsErrorKind::ResolverFailure,
@@ -212,7 +251,7 @@ impl Resolver for SystemResolver {
                 format!("system resolver returned no addresses for {}", query.name()),
             ))
         } else {
-            Ok(result)
+            DnsAnswer::new(result, None)
         }
     }
 }
@@ -253,7 +292,7 @@ struct CacheEntry {
 struct DnsCache {
     entries: HashMap<String, CacheEntry>,
     capacity: usize,
-    ttl: Duration,
+    max_ttl: Duration,
 }
 
 impl DnsCache {
@@ -261,7 +300,7 @@ impl DnsCache {
         Self {
             entries: HashMap::new(),
             capacity: DEFAULT_CACHE_CAPACITY,
-            ttl: DEFAULT_CACHE_TTL,
+            max_ttl: DEFAULT_CACHE_TTL,
         }
     }
 
@@ -275,7 +314,7 @@ impl DnsCache {
         Ok(Self {
             entries: HashMap::new(),
             capacity,
-            ttl,
+            max_ttl: ttl,
         })
     }
 
@@ -291,7 +330,17 @@ impl DnsCache {
         self.entries.get(name).map(|entry| entry.addresses.clone())
     }
 
-    fn insert(&mut self, name: String, addresses: Vec<IpAddr>, now: Instant) {
+    fn insert(
+        &mut self,
+        name: String,
+        addresses: Vec<IpAddr>,
+        resolver_ttl: Option<Duration>,
+        now: Instant,
+    ) {
+        let ttl = resolver_ttl.unwrap_or(self.max_ttl).min(self.max_ttl);
+        if ttl.is_zero() {
+            return;
+        }
         self.entries.retain(|_, entry| entry.expires > now);
         if !self.entries.contains_key(&name) && self.entries.len() >= self.capacity {
             if let Some(oldest) = self
@@ -308,7 +357,7 @@ impl DnsCache {
             CacheEntry {
                 addresses,
                 inserted: now,
-                expires: now + self.ttl,
+                expires: now + ttl,
             },
         );
     }
@@ -385,19 +434,21 @@ impl DnsEngine {
         let mut last_error = None;
         for resolver in &self.resolvers {
             match resolver.resolve(&query) {
-                Ok(addresses) if !addresses.is_empty() => {
+                Ok(answer) => {
+                    let (addresses, resolver_ttl) = answer.into_parts();
                     let addresses = deduplicate_bounded(addresses);
+                    if addresses.is_empty() {
+                        last_error = Some(DnsError::new(
+                            DnsErrorKind::NoRecords,
+                            format!("resolver returned no addresses for {}", query.name()),
+                        ));
+                        continue;
+                    }
                     let mut cache = self.cache.lock().map_err(|_| {
                         DnsError::new(DnsErrorKind::ResolverFailure, "DNS cache lock is poisoned")
                     })?;
-                    cache.insert(query.name, addresses.clone(), now);
+                    cache.insert(query.name, addresses.clone(), resolver_ttl, now);
                     return Ok(addresses);
-                }
-                Ok(_) => {
-                    last_error = Some(DnsError::new(
-                        DnsErrorKind::NoRecords,
-                        format!("resolver returned no addresses for {}", query.name()),
-                    ));
                 }
                 Err(error) => {
                     self.stats.resolver_failures.fetch_add(1, Ordering::Relaxed);
@@ -445,14 +496,18 @@ mod tests {
     use super::*;
 
     struct StaticResolver {
-        result: Result<Vec<IpAddr>, DnsError>,
+        result: Result<DnsAnswer, DnsError>,
         calls: AtomicUsize,
     }
 
     impl StaticResolver {
         fn success(address: &str) -> Self {
+            Self::success_with_ttl(address, None)
+        }
+
+        fn success_with_ttl(address: &str, ttl: Option<Duration>) -> Self {
             Self {
-                result: Ok(vec![address.parse().unwrap()]),
+                result: DnsAnswer::new(vec![address.parse().unwrap()], ttl),
                 calls: AtomicUsize::new(0),
             }
         }
@@ -469,7 +524,7 @@ mod tests {
     }
 
     impl Resolver for StaticResolver {
-        fn resolve(&self, _query: &DnsQuery) -> Result<Vec<IpAddr>, DnsError> {
+        fn resolve(&self, _query: &DnsQuery) -> Result<DnsAnswer, DnsError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.result.clone()
         }
@@ -504,6 +559,25 @@ mod tests {
         assert_eq!(engine.resolve("cache.example").unwrap().len(), 1);
         assert_eq!(resolver.calls.load(Ordering::Relaxed), 1);
         assert_eq!(engine.stats().cache_hits, 1);
+    }
+
+    #[test]
+    fn resolver_zero_ttl_is_not_cached() {
+        let resolver = Arc::new(StaticResolver::success_with_ttl(
+            "198.51.100.9",
+            Some(Duration::ZERO),
+        ));
+        let engine = DnsEngine::with_resolvers(
+            HostsTable::default(),
+            vec![resolver.clone()],
+            16,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert_eq!(engine.resolve("volatile.example").unwrap().len(), 1);
+        assert_eq!(engine.resolve("volatile.example").unwrap().len(), 1);
+        assert_eq!(resolver.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(engine.stats().cache_hits, 0);
     }
 
     #[test]

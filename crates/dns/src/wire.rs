@@ -1,4 +1,9 @@
-use std::{collections::HashSet, net::{IpAddr, Ipv4Addr, Ipv6Addr}, ops::Range, time::Duration};
+use std::{
+    collections::HashSet,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    ops::Range,
+    time::Duration,
+};
 
 use super::{DnsAnswer, DnsError, DnsErrorKind, DnsQuery, normalize_name};
 
@@ -67,17 +72,23 @@ pub(crate) fn parse_address_response(
     message: &[u8],
 ) -> Result<DnsAnswer, DnsError> {
     if message.len() < DNS_HEADER_BYTES || message.len() > MAX_DNS_MESSAGE_BYTES {
-        return Err(invalid_response("DNS response size is outside the supported bounds"));
+        return Err(invalid_response(
+            "DNS response size is outside the supported bounds",
+        ));
     }
 
     let id = read_u16(message, 0)?;
     if id != expected_id {
-        return Err(invalid_response("DNS response transaction ID does not match query"));
+        return Err(invalid_response(
+            "DNS response transaction ID does not match query",
+        ));
     }
 
     let flags = read_u16(message, 2)?;
     if flags & FLAG_QR == 0 {
-        return Err(invalid_response("DNS response is missing the response flag"));
+        return Err(invalid_response(
+            "DNS response is missing the response flag",
+        ));
     }
     if flags & FLAG_TC != 0 {
         return Err(DnsError::new(
@@ -96,7 +107,10 @@ pub(crate) fn parse_address_response(
         code => {
             return Err(DnsError::new(
                 DnsErrorKind::ResolverFailure,
-                format!("DNS upstream returned response code {code} for {}", query.name()),
+                format!(
+                    "DNS upstream returned response code {code} for {}",
+                    query.name()
+                ),
             ));
         }
     }
@@ -104,21 +118,29 @@ pub(crate) fn parse_address_response(
     let question_count = usize::from(read_u16(message, 4)?);
     let answer_count = usize::from(read_u16(message, 6)?);
     if question_count != 1 {
-        return Err(invalid_response("DNS response must contain exactly one question"));
+        return Err(invalid_response(
+            "DNS response must contain exactly one question",
+        ));
     }
     if answer_count > MAX_DNS_ANSWER_RECORDS {
-        return Err(invalid_response("DNS response answer count exceeds the configured bound"));
+        return Err(invalid_response(
+            "DNS response answer count exceeds the configured bound",
+        ));
     }
 
     let mut offset = DNS_HEADER_BYTES;
     let question_name = decode_name(message, &mut offset)?;
     if question_name != query.name() {
-        return Err(invalid_response("DNS response question name does not match query"));
+        return Err(invalid_response(
+            "DNS response question name does not match query",
+        ));
     }
     let question_type = take_u16(message, &mut offset)?;
     let question_class = take_u16(message, &mut offset)?;
     if question_type != record_type.code() || question_class != CLASS_IN {
-        return Err(invalid_response("DNS response question type/class does not match query"));
+        return Err(invalid_response(
+            "DNS response question type/class does not match query",
+        ));
     }
 
     let mut records = Vec::with_capacity(answer_count);
@@ -167,7 +189,9 @@ fn resolve_addresses_through_aliases(
             let mut offset = record.rdata.start;
             let target = decode_name(message, &mut offset)?;
             if offset != record.rdata.end {
-                return Err(invalid_response("DNS CNAME record has trailing or malformed data"));
+                return Err(invalid_response(
+                    "DNS CNAME record has trailing or malformed data",
+                ));
             }
             chain_ttl = Some(min_ttl(chain_ttl, record.ttl));
             if accepted_names.insert(target) {
@@ -178,7 +202,9 @@ fn resolve_addresses_through_aliases(
             break;
         }
         if accepted_names.len() > MAX_DNS_ALIAS_HOPS + 1 {
-            return Err(invalid_response("DNS CNAME chain exceeds the configured bound"));
+            return Err(invalid_response(
+                "DNS CNAME chain exceeds the configured bound",
+            ));
         }
     }
 
@@ -231,7 +257,10 @@ fn encode_name(name: &str, output: &mut Vec<u8>) -> Result<(), DnsError> {
         let length = u8::try_from(label.len())
             .map_err(|_| DnsError::new(DnsErrorKind::InvalidName, "DNS label is too long"))?;
         if length == 0 || length > 63 {
-            return Err(DnsError::new(DnsErrorKind::InvalidName, "invalid DNS label length"));
+            return Err(DnsError::new(
+                DnsErrorKind::InvalidName,
+                "invalid DNS label length",
+            ));
         }
         output.push(length);
         output.extend_from_slice(label.as_bytes());
@@ -265,18 +294,27 @@ fn decode_name(message: &[u8], offset: &mut usize) -> Result<String, DnsError> {
             if pointer >= message.len() {
                 return Err(invalid_response("DNS compression pointer is out of bounds"));
             }
+            if pointer >= cursor {
+                return Err(invalid_response(
+                    "DNS compression pointer does not point backward",
+                ));
+            }
             if resume.is_none() {
                 resume = Some(cursor + 2);
             }
             cursor = pointer;
             hops += 1;
             if hops > MAX_DNS_NAME_POINTER_HOPS {
-                return Err(invalid_response("DNS compression pointer chain exceeds the bound"));
+                return Err(invalid_response(
+                    "DNS compression pointer chain exceeds the bound",
+                ));
             }
             continue;
         }
         if length & 0xc0 != 0 {
-            return Err(invalid_response("DNS name uses an unsupported label encoding"));
+            return Err(invalid_response(
+                "DNS name uses an unsupported label encoding",
+            ));
         }
         cursor += 1;
         if length == 0 {
@@ -396,8 +434,12 @@ mod tests {
         push_rr_header(&mut response, TYPE_A, 90, 4);
         response.extend_from_slice(&[203, 0, 113, 9]);
 
-        let answer = parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap();
-        assert_eq!(answer.addresses(), &[IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))]);
+        let answer =
+            parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap();
+        assert_eq!(
+            answer.addresses(),
+            &[IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))]
+        );
         assert_eq!(answer.ttl(), Some(Duration::from_secs(90)));
     }
 
@@ -410,7 +452,8 @@ mod tests {
         push_rr_header(&mut response, TYPE_AAAA, 120, 16);
         response.extend_from_slice(&Ipv6Addr::LOCALHOST.octets());
 
-        let answer = parse_address_response(0x1234, &query, AddressRecordType::Aaaa, &response).unwrap();
+        let answer =
+            parse_address_response(0x1234, &query, AddressRecordType::Aaaa, &response).unwrap();
         assert_eq!(answer.addresses(), &[IpAddr::V6(Ipv6Addr::LOCALHOST)]);
         assert_eq!(answer.ttl(), Some(Duration::from_secs(120)));
     }
@@ -432,8 +475,12 @@ mod tests {
         response.extend_from_slice(&[192, 0, 2, 44]);
         assert!(owner_offset < 0x4000);
 
-        let answer = parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap();
-        assert_eq!(answer.addresses(), &[IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44))]);
+        let answer =
+            parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap();
+        assert_eq!(
+            answer.addresses(),
+            &[IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44))]
+        );
         assert_eq!(answer.ttl(), Some(Duration::from_secs(30)));
     }
 
@@ -446,8 +493,8 @@ mod tests {
         push_rr_header(&mut response, TYPE_A, 60, 4);
         response.extend_from_slice(&[192, 0, 2, 1]);
 
-        let error = parse_address_response(0x1234, &query, AddressRecordType::A, &response)
-            .unwrap_err();
+        let error =
+            parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap_err();
         assert_eq!(error.kind(), DnsErrorKind::NoRecords);
     }
 
@@ -460,7 +507,8 @@ mod tests {
         push_rr_header(&mut response, TYPE_A, 0, 4);
         response.extend_from_slice(&[198, 51, 100, 8]);
 
-        let answer = parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap();
+        let answer =
+            parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap();
         assert_eq!(answer.ttl(), Some(Duration::ZERO));
     }
 
@@ -469,8 +517,8 @@ mod tests {
         let query = DnsQuery::new("missing.example").unwrap();
         let mut response = response_header(0x1234, 0, 3);
         response.extend_from_slice(&question("missing.example", AddressRecordType::A));
-        let error = parse_address_response(0x1234, &query, AddressRecordType::A, &response)
-            .unwrap_err();
+        let error =
+            parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap_err();
         assert_eq!(error.kind(), DnsErrorKind::NoRecords);
     }
 
@@ -479,8 +527,8 @@ mod tests {
         let query = DnsQuery::new("id.example").unwrap();
         let mut response = response_header(0x9999, 0, 0);
         response.extend_from_slice(&question("id.example", AddressRecordType::A));
-        let error = parse_address_response(0x1234, &query, AddressRecordType::A, &response)
-            .unwrap_err();
+        let error =
+            parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap_err();
         assert_eq!(error.kind(), DnsErrorKind::InvalidResponse);
     }
 
@@ -493,8 +541,8 @@ mod tests {
         push_pointer_name(&mut response, owner_offset as u16);
         push_rr_header(&mut response, TYPE_A, 60, 4);
         response.extend_from_slice(&[127, 0, 0, 1]);
-        let error = parse_address_response(0x1234, &query, AddressRecordType::A, &response)
-            .unwrap_err();
+        let error =
+            parse_address_response(0x1234, &query, AddressRecordType::A, &response).unwrap_err();
         assert_eq!(error.kind(), DnsErrorKind::InvalidResponse);
     }
 }

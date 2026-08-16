@@ -63,6 +63,9 @@ version = "0.5.0-alpha.1"
 [[package]]
 name = "commeatus-dns"
 version = "0.5.0-alpha.1"
+dependencies = [
+ "commeatus-transport",
+]
 
 [[package]]
 name = "commeatus-platform"
