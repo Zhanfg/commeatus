@@ -4,6 +4,58 @@ All notable changes to Commeatus are documented here.
 
 The project is pre-1.0. Native configuration and internal APIs may change between alpha releases.
 
+## 0.4.0-alpha.1 — 2026-08-16
+
+Fourth public alpha. This release establishes a reusable transport-session layer and adds verified native TLS beneath existing outbound proxy protocols.
+
+### Added
+
+- `commeatus-transport` ownership boundary with `TransportConnector`, `TransportSession`, and transport capabilities
+- `TcpTransport` / `TcpTransportSession`; TCP-specific clone/half-close logic now belongs to the transport
+- rustls 0.23 + ring `TlsTransport` / `TlsTransportSession`
+- embedded WebPKI root verification on the native TLS path
+- independent literal upstream `SocketAddr` and TLS `ServerName` / SNI
+- readiness-driven TLS full-duplex relay using `mio::Poll`
+- bounded TLS plaintext buffering and bounded connect/handshake timeouts
+- explicit native endpoint forms for TCP and TLS while preserving v0.3 implicit-TCP syntax
+- `examples/tls-proxy-outbound.conf`
+- ADR-0004 `Transport Owns Session Relay`
+- ADR-0005 `TLS Is a Verified Transport`
+- deterministic local certificate/SNI verification tests
+- full-duplex TLS relay + clean `close_notify` test
+- cross-layer HTTP inbound → SOCKS5 protocol → TLS transport → TLS SOCKS5 mock → echo E2E
+- Android NDK environment helper for Cargo linker plus target-specific `cc-rs` CC/AR
+
+### Changed
+
+- outbound protocols now perform handshakes over `TransportSession` rather than returning raw `TcpStream`
+- carrier relay behavior has one authoritative transport owner
+- endpoint encrypted capability is derived from transport metadata
+- native TLS configuration separates network connection address from certificate identity
+- Android CI/package builds configure native C/assembly dependencies against the same NDK/API-29 toolchain as Rust
+
+### Security and stability
+
+- native TLS certificate/server-name verification is enabled by default
+- no native insecure/skip-verification switch is provided
+- wrong TLS server identity fails even when the issuing test CA is trusted
+- unclean network EOF is not silently accepted as TLS `close_notify`
+- TLS readiness interests are registered only while useful I/O work exists; there is no fixed periodic relay timer
+- proxy-routed `.invalid` destination identity remains preserved through SOCKS5-over-TLS without local destination DNS
+- Rust 1.85 all-targets, Android arm64/ring, eBPF and release packaging remain gated in CI
+
+### Known limitations
+
+- no Trojan, VLESS, Shadowsocks, Hysteria2 or TUIC yet
+- no proxy UDP execution
+- no Android/Linux user-added enterprise trust-store import
+- no client certificates / mTLS, pinning, explicit ALPN policy or ECH
+- no endpoint groups / health selection / adaptive routing
+- no live TUN/TPROXY/eBPF interception
+- no KernelSU/Magisk packaging
+- no DoH/DoT/DoQ/Fake-IP
+- no Clash/mihomo/sing-box import or compatible API
+
 ## 0.3.0-alpha.1 — 2026-08-16
 
 Third public alpha. This release turns policy-selected proxy endpoint identities into a real native TCP execution path while preserving the boundary between core routing decisions and protocol implementation.

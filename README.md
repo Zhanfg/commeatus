@@ -4,7 +4,7 @@ Commeatus is a Rust proxy core and runtime built around a flow-centric policy mo
 
 The name comes from Latin *commeatus*: passage, free movement, traffic, and a route through which movement can occur.
 
-> **Status:** `0.3.0-alpha.1`. This is an experimental alpha, not a production-ready replacement for mihomo or sing-box. It has a real TCP/UDP inbound data plane, native policy, compiled domain filtering, an isolated DNS engine, named native proxy TCP outbounds, Android arm64 builds, and a CI-verified eBPF prototype boundary.
+> **Status:** `0.4.0-alpha.1`. This is an experimental alpha, not a production-ready replacement for mihomo or sing-box. It has a real TCP/UDP inbound data plane, native policy, compiled domain filtering, an isolated DNS engine, named proxy TCP outbounds, a verified rustls TLS transport, Android arm64 builds, and a CI-verified eBPF prototype boundary.
 
 ## Project priorities
 
@@ -46,7 +46,7 @@ ExecutionAction
 
 `Reject` is an action, not a fake outbound. The core knows a proxy endpoint only by its validated opaque `EndpointId`; SOCKS5/HTTP protocol configuration and upstream addresses remain execution-layer data.
 
-## What works in 0.3.0-alpha.1
+## What works in 0.4.0-alpha.1
 
 ### Inbounds and direct data plane
 
@@ -111,6 +111,37 @@ Current endpoint guards:
 - upstream endpoint address must currently be a literal IP socket address with a non-zero port
 
 Literal upstream addresses are deliberate for this slice. Proxy-bootstrap DNS will receive explicit semantics later instead of being smuggled into the config parser.
+
+### Verified TLS transport
+
+TLS is a transport/security capability below the proxy-protocol handshake. Existing SOCKS5 and HTTP CONNECT outbounds can run over plain TCP or verified TLS without TLS-specific branches in their protocol code.
+
+Native forms:
+
+```text
+# v0.3-compatible implicit TCP
+endpoint edge socks5 127.0.0.1:1081
+
+# explicit TCP
+endpoint edge-tcp socks5 tcp 127.0.0.1:1081
+
+# TLS: connection address and certificate identity are separate
+endpoint secure socks5 tls 203.0.113.7:443 proxy.example
+```
+
+The native TLS path:
+
+- uses rustls 0.23 with the ring crypto provider;
+- validates the configured `ServerName` / SNI against the peer certificate;
+- trusts the embedded WebPKI server-root set;
+- keeps `SocketAddr` separate from TLS identity;
+- applies bounded connect and handshake timeouts;
+- bounds rustls plaintext buffering;
+- exposes no native `insecure` / `skip-verify` switch.
+
+After the proxy-protocol handshake, `TlsTransportSession` owns the TLS state and drives the tunnel with readiness notifications rather than a fixed periodic timer. Clean `close_notify` shutdown is preserved; an unclean network EOF is not silently reclassified as a valid TLS close.
+
+Android cross-builds configure Cargo, `cc-rs`, and ring against the same NDK/API-29 toolchain through `scripts/android-ndk-env.sh`.
 
 ### Flow and policy
 
@@ -207,7 +238,7 @@ The DNS engine provides:
 - at most 16 returned addresses per resolution
 - resolver failure isolation
 
-System DNS is still the only network resolver in `0.3.0-alpha.1`. DoH, DoT, DoQ and Fake-IP are future implementations behind the resolver boundary.
+System DNS is still the only network resolver in `0.4.0-alpha.1`. DoH, DoT, DoQ and Fake-IP are future implementations behind the resolver boundary.
 
 DNS hosts assets are separate from blocklists:
 
@@ -262,6 +293,12 @@ Validate named proxy endpoint syntax:
 
 ```bash
 ./target/release/commeatus check --config examples/proxy-outbound.conf
+```
+
+Validate verified TLS endpoint syntax:
+
+```bash
+./target/release/commeatus check --config examples/tls-proxy-outbound.conf
 ```
 
 Run:
@@ -322,6 +359,7 @@ Current guards include:
 - direct outbound TCP connect deadline: 10 seconds after resolution
 - proxy upstream TCP connect timeout: 10 seconds
 - proxy handshake timeout: 10 seconds
+- TLS transport buffer limit: 64 KiB
 - resolved-address candidate cap: 16
 - UDP idle timeout: 120 seconds
 - upstream HTTP response-header cap: 16 KiB
@@ -330,7 +368,7 @@ All configured listener sockets must bind before service starts. Per-flow/sessio
 
 ## Current limitations
 
-`0.3.0-alpha.1` does **not** include:
+`0.4.0-alpha.1` does **not** include:
 
 - inbound SOCKS5/HTTP authentication
 - upstream SOCKS5/HTTP authentication
@@ -338,7 +376,6 @@ All configured listener sockets must bind before service starts. Per-flow/sessio
 - SOCKS5 UDP fragmentation/reassembly
 - proxy UDP execution
 - endpoint groups, health selection or load balancing
-- TLS transport provider
 - Shadowsocks, Trojan, VLESS, Hysteria2 or TUIC
 - TUN interception
 - live TPROXY installation
@@ -381,6 +418,9 @@ The E2E suite includes real loopback coverage for:
 - SOCKS5 inbound → named upstream SOCKS5 proxy → echo
 - HTTP CONNECT inbound → named upstream HTTP proxy → echo
 - `.invalid` target-domain preservation to the selected upstream proxy without local destination DNS
+- HTTP inbound → SOCKS5 outbound protocol → verified TLS transport → TLS SOCKS5 mock → echo, with `.invalid` target preservation
+- trusted test CA + matching TLS identity succeeds; wrong TLS identity fails
+- clean TLS full-duplex relay / `close_notify` shutdown
 
 ## Repository layout
 
@@ -390,6 +430,7 @@ The E2E suite includes real loopback coverage for:
 ├── crates/
 │   ├── core/       # Flow / Policy / ExecutionPlan / endpoint identity
 │   ├── dns/        # DNS engine, hosts, cache and resolver boundary
+│   ├── transport/  # TCP/TLS transport sessions and carrier-owned relay
 │   ├── daemon/     # inbound handlers, outbound registry and execution
 │   ├── platform/   # Linux / Android capability boundary
 │   └── compat/     # external-format compilers such as blocklists
@@ -419,15 +460,14 @@ Accepted architecture decisions live in `docs/adr/`.
 
 After this release line, the highest-value work is:
 
-1. reusable transport-session boundary, starting with TLS as a transport capability rather than protocol-owned security
-2. first encrypted native proxy protocol on that transport boundary
-3. proxy UDP execution and a capability-safe datagram abstraction
-4. secure DNS resolvers behind `commeatus-dns`
-5. TPROXY backend and safe attach/cleanup lifecycle
-6. eBPF loader, read-only policy maps, atomic generations and fallback behavior
-7. compatibility importers/API facade
-8. adaptive routing and real-traffic telemetry
-9. low-power executor and comparative power/performance benchmarks
+1. first encrypted native proxy protocol on the verified transport boundary
+2. proxy UDP execution and a capability-safe datagram abstraction
+3. secure DNS resolvers behind `commeatus-dns`
+4. TPROXY backend and safe attach/cleanup lifecycle
+5. eBPF loader, read-only policy maps, atomic generations and fallback behavior
+6. compatibility importers/API facade
+7. adaptive routing and real-traffic telemetry
+8. low-power executor and comparative power/performance benchmarks
 
 ## Security
 
