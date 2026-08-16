@@ -8,6 +8,8 @@
 #![forbid(unsafe_code)]
 
 mod tls;
+#[cfg(test)]
+mod tls_tests;
 
 use std::{
     io::{self, Read, Write},
