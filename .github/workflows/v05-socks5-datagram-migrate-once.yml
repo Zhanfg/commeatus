@@ -30,6 +30,7 @@ jobs:
           ! grep -R --line-number 'UDP_POLL_TIMEOUT\|control_is_closed\|MAX_UDP_REMOTE_PEERS' crates/daemon/src/socks5.rs
           grep -q 'DirectDatagramAssociation::new' crates/daemon/src/socks5.rs
           cargo fmt --all
+          cargo check --workspace --all-targets
           cargo check --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo test --workspace --locked
