@@ -27,9 +27,11 @@ jobs:
       - name: Integrate shared wire and provider, verify stable
         run: |
           python3 scripts/v05_trojan_udp_wire.py
+          python3 scripts/v05_trojan_udp_test_migrate.py
           grep -q 'TrojanDatagramProvider::new' crates/daemon/src/config.rs
           grep -q 'trojan_with_verifier' crates/daemon/src/protocol.rs
           grep -q 'let outbound_ready' crates/daemon/src/socks5.rs
+          ! grep -R --line-number 'protocol::trojan(' crates/daemon/src --include='*.rs'
           cargo fmt --all
           cargo check --workspace --all-targets --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -42,6 +44,7 @@ jobs:
         run: |
           rm .github/workflows/v05-trojan-udp-wire-once.yml
           rm scripts/v05_trojan_udp_wire.py
+          rm scripts/v05_trojan_udp_test_migrate.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
