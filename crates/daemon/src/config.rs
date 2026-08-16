@@ -12,7 +12,7 @@ use commeatus_core::{
     RejectReason, RuleId, Runtime,
 };
 use commeatus_dns::{DnsEngine, HostsTable, MAX_HOSTS_BYTES};
-use commeatus_transport::TcpTransport;
+use commeatus_transport::{TcpTransport, TlsTransport};
 
 use crate::outbound::{OutboundRegistry, ProxyEndpointConfig, ProxyProtocol, TransportConfig};
 
@@ -272,26 +272,28 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                 listeners.push(ListenerConfig { protocol, address });
             }
             Some("endpoint") => {
-                expect_fields(
-                    &fields,
-                    4,
-                    line_number,
-                    "endpoint syntax is `endpoint <id> <socks5|http> <ip:port>`",
-                )?;
                 if endpoint_configs.len() >= MAX_PROXY_ENDPOINTS {
                     return Err(ConfigError::at(
                         line_number,
                         format!("proxy endpoint count exceeds {MAX_PROXY_ENDPOINTS}"),
                     ));
                 }
-                let id = EndpointId::new(fields[1].to_owned())
+                let id = fields
+                    .get(1)
+                    .ok_or_else(|| {
+                        ConfigError::at(
+                            line_number,
+                            "endpoint syntax is `endpoint <id> <socks5|http> [tcp] <ip:port>` or `endpoint <id> <socks5|http> tls <ip:port> <server-name>`",
+                        )
+                    })?;
+                let id = EndpointId::new((*id).to_owned())
                     .map_err(|error| ConfigError::at(line_number, error.to_string()))?;
                 if !endpoint_ids.insert(id.clone()) {
                     return Err(ConfigError::at(line_number, "duplicate proxy endpoint id"));
                 }
-                let protocol = match fields[2] {
-                    "socks5" => ProxyProtocol::Socks5,
-                    "http" => ProxyProtocol::HttpConnect,
+                let protocol = match fields.get(2).copied() {
+                    Some("socks5") => ProxyProtocol::Socks5,
+                    Some("http") => ProxyProtocol::HttpConnect,
                     _ => {
                         return Err(ConfigError::at(
                             line_number,
@@ -299,10 +301,24 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                         ));
                     }
                 };
-                let address: SocketAddr = fields[3].parse().map_err(|_| {
+
+                let (transport_name, address_value, server_name) = match fields.as_slice() {
+                    ["endpoint", _, _, address] => ("tcp", *address, None),
+                    ["endpoint", _, _, "tcp", address] => ("tcp", *address, None),
+                    ["endpoint", _, _, "tls", address, server_name] => {
+                        ("tls", *address, Some(*server_name))
+                    }
+                    _ => {
+                        return Err(ConfigError::at(
+                            line_number,
+                            "endpoint syntax is `endpoint <id> <socks5|http> [tcp] <ip:port>` or `endpoint <id> <socks5|http> tls <ip:port> <server-name>`",
+                        ));
+                    }
+                };
+                let address: SocketAddr = address_value.parse().map_err(|_| {
                     ConfigError::at(
                         line_number,
-                        "proxy endpoint address must currently be an IP socket address",
+                        "proxy endpoint address must be an IP socket address",
                     )
                 })?;
                 if address.port() == 0 {
@@ -311,10 +327,18 @@ pub fn parse_config_at(text: &str, asset_root: &Path) -> Result<CompiledConfig, 
                         "proxy endpoint port must not be zero",
                     ));
                 }
+                let transport = match transport_name {
+                    "tcp" => TransportConfig::Tcp(TcpTransport::new(address)),
+                    "tls" => TransportConfig::Tls(
+                        TlsTransport::webpki(address, server_name.expect("TLS syntax checked"))
+                            .map_err(|error| ConfigError::at(line_number, error.to_string()))?,
+                    ),
+                    _ => unreachable!(),
+                };
                 endpoint_configs.push(ProxyEndpointConfig {
                     id,
                     protocol,
-                    transport: TransportConfig::Tcp(TcpTransport::new(address)),
+                    transport,
                 });
             }
             Some("default") => {
@@ -864,6 +888,36 @@ mod tests {
             default direct
         "#;
         assert!(parse_config(config).is_ok());
+    }
+
+    #[test]
+    fn explicit_tcp_and_tls_endpoint_syntax_compile() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            endpoint plain socks5 tcp 127.0.0.1:1081
+            endpoint secure http tls 127.0.0.1:8443 proxy.example
+            rule proxy:secure domain-suffix secure.example
+            default proxy:plain
+        "#;
+        let compiled = parse_config(config).unwrap();
+        assert_eq!(compiled.outbounds().len(), 2);
+        let secure = Endpoint::Proxy(EndpointId::new("secure").unwrap());
+        let capabilities = compiled.outbounds().capabilities(&secure).unwrap();
+        assert!(capabilities.supports_tcp());
+        assert!(!capabilities.supports_udp());
+        assert!(capabilities.encrypted_transport());
+    }
+
+    #[test]
+    fn invalid_tls_server_name_rejects_candidate() {
+        let config = r#"
+            version 1
+            listen socks5 127.0.0.1:1080
+            endpoint secure socks5 tls 127.0.0.1:8443 bad_name!
+            default proxy:secure
+        "#;
+        assert!(parse_config(config).is_err());
     }
 
     #[test]

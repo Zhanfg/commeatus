@@ -14,3 +14,5 @@ pub use server::Server;
 mod e2e;
 #[cfg(test)]
 mod outbound_e2e;
+#[cfg(test)]
+mod tls_outbound_e2e;
