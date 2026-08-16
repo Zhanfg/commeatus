@@ -49,13 +49,19 @@ jobs:
           ./target/release/commeatus check --config examples/tls-proxy-outbound.conf
           ./target/release/commeatus check --config examples/trojan-outbound.conf
           ./target/release/commeatus check --config examples/android-root-tproxy-tcp.conf
+          ./target/release/commeatus check --config examples/android-root-tproxy.conf
           sh -n scripts/android-root-tproxy-tcp.sh
+          sh -n scripts/android-root-tproxy.sh
       - name: Privileged TPROXY listener bind smoke
         run: |
           sudo env PATH="$PATH" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
             "$(command -v cargo)" test -p commeatus transparent_tcp::tests::privileged_transparent_bind_smoke --locked -- --ignored --exact
+          sudo env PATH="$PATH" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+            "$(command -v cargo)" test -p commeatus transparent_udp::tests::privileged_reply_socket_preserves_nonlocal_source_bind --locked -- --ignored --exact
       - name: TPROXY TCP namespace E2E
         run: sudo bash scripts/ci/tproxy-tcp-netns-e2e.sh ./target/release/commeatus
+      - name: TPROXY UDP namespace E2E
+        run: sudo bash scripts/ci/tproxy-udp-netns-e2e.sh ./target/release/commeatus
 
   msrv:
     name: MSRV 1.85
