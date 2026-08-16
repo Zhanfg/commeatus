@@ -26,11 +26,13 @@ jobs:
           components: rustfmt, clippy
       - name: Apply typed DNS answer and DoT migration
         run: |
+          python3 scripts/v06_dns_answer_patch.py
           python3 scripts/v06_dns_answer_migrate.py
           grep -q 'pub use dot::DotResolver' crates/dns/src/lib.rs
           grep -q 'pub struct DnsAnswer' crates/dns/src/lib.rs
           grep -q 'resolver_zero_ttl_is_not_cached' crates/dns/src/lib.rs
           grep -q 'DNS compression pointer does not point backward' crates/dns/src/wire.rs
+          grep -q 'pub fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, DnsError>' crates/dns/src/lib.rs
           ! grep -q '\.expect(' crates/dns/src/dot.rs
       - name: Refresh lockfile for DNS transport dependency
         run: cargo check --workspace --all-targets
@@ -55,6 +57,7 @@ jobs:
         run: |
           rm .github/workflows/v06-dns-answer-wire-once.yml
           rm scripts/v06_dns_answer_migrate.py
+          rm scripts/v06_dns_answer_patch.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
