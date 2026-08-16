@@ -4,7 +4,7 @@ Commeatus is a Rust proxy core and runtime built around a flow-centric policy mo
 
 The name comes from Latin *commeatus*: passage, free movement, traffic, and a route through which movement can occur.
 
-> **Status:** `0.4.0-alpha.1`. This is an experimental alpha, not a production-ready replacement for mihomo or sing-box. It has a real TCP/UDP inbound data plane, native policy, compiled domain filtering, an isolated DNS engine, named proxy TCP outbounds, a verified rustls TLS transport, Android arm64 builds, and a CI-verified eBPF prototype boundary.
+> **Status:** `0.5.0-alpha.1`. This is an experimental alpha, not a production-ready replacement for mihomo or sing-box. It has real TCP/UDP inbounds, native policy, compiled domain filtering, an isolated DNS engine, named proxy stream outbounds, native Trojan CONNECT and UDP ASSOCIATE over verified rustls TLS, Android arm64 builds, and a CI-verified eBPF prototype boundary.
 
 ## Project priorities
 
@@ -46,7 +46,7 @@ ExecutionAction
 
 `Reject` is an action, not a fake outbound. The core knows a proxy endpoint only by its validated opaque `EndpointId`; SOCKS5/HTTP protocol configuration and upstream addresses remain execution-layer data.
 
-## What works in 0.4.0-alpha.1
+## What works in 0.5.0-alpha.1
 
 ### Inbounds and direct data plane
 
@@ -61,27 +61,32 @@ ExecutionAction
 - UDP client endpoint locking and remote-reply allowlisting
 - explicit rejection of unsupported SOCKS5 UDP fragmentation
 
-### Named proxy TCP outbounds
+### Named proxy outbounds
 
-The daemon owns an execution-layer `OutboundRegistry`:
+The daemon owns the execution-layer `OutboundRegistry`, but protocol and datagram lifecycle are attached through providers rather than encoded as a central protocol enum:
 
 ```text
 EndpointId
    ↓
-OutboundRegistry
-   ├─ protocol capability
-   ├─ upstream address
-   └─ connector implementation
+ProxyEndpointConfig
+   ├─ stream protocol provider + transport
+   └─ optional datagram provider
 ```
 
-The first native proxy outbounds are:
+Native stream outbounds currently include:
 
 - upstream SOCKS5 no-auth TCP `CONNECT`
 - upstream HTTP/1.x `CONNECT`
+- Trojan `CONNECT` over verified TLS
 
-A domain selected for a proxy route is preserved to the upstream proxy. It is **not** first resolved through the local DIRECT DNS engine.
+Native datagram execution currently includes:
 
-Current proxy endpoints advertise TCP capability only. If policy selects one for UDP, the datagram is not silently sent DIRECT.
+- policy-aware DIRECT UDP
+- Trojan UDP `ASSOCIATE` over verified TLS
+
+A domain selected for any proxy route is preserved to the upstream proxy. It is **not** first resolved through the local DIRECT DNS engine.
+
+UDP capability comes from a real datagram-provider attachment. If policy selects an endpoint that lacks one, the datagram fails locally and is never silently sent DIRECT.
 
 ### Native outbound configuration
 
@@ -93,6 +98,7 @@ listen http 127.0.0.1:8080
 
 endpoint edge-socks socks5 127.0.0.1:1081
 endpoint office-http http 127.0.0.1:8081
+endpoint secure-trojan trojan tls 203.0.113.10:443 trojan.example change-me
 
 rule proxy:edge-socks domain-suffix proxied.example
 rule proxy:office-http domain-exact office.example
@@ -142,6 +148,22 @@ The native TLS path:
 After the proxy-protocol handshake, `TlsTransportSession` owns the TLS state and drives the tunnel with readiness notifications rather than a fixed periodic timer. Clean `close_notify` shutdown is preserved; an unclean network EOF is not silently reclassified as a valid TLS close.
 
 Android cross-builds configure Cargo, `cc-rs`, and ring against the same NDK/API-29 toolchain through `scripts/android-ndk-env.sh`.
+
+### Native Trojan TCP and UDP
+
+Trojan is the first encrypted native proxy protocol. The same native endpoint attaches an independent stream provider and datagram provider above verified TLS:
+
+```text
+endpoint secure trojan tls 203.0.113.10:443 trojan.example change-me
+```
+
+The raw password is transformed into the Trojan verifier while compiling the configuration candidate. The active protocol objects do not retain the raw source password.
+
+Stream CONNECT uses the ordinary verified `TransportSession`. UDP uses a dedicated `TrojanDatagramProvider` over a readiness-driven framed TLS session. The UDP ASSOCIATE preface uses a normalized `0.0.0.0:0` initial target; each following Trojan UDP frame carries its own IPv4, IPv6 or domain destination.
+
+The datagram path is event driven. It does not use the previous fixed 500 ms SOCKS5 UDP poll timeout, does not register permanent writable interest, and does not start a background Trojan worker.
+
+Trojan UDP state is bounded to 64 pending frames, 512 KiB of pending protocol bytes and 128 KiB of decrypted receive buffering. Partial TLS plaintext, multiple coalesced frames and zero-length UDP payloads are covered by native tests and full SOCKS5-to-Trojan TLS E2E.
 
 ### Flow and policy
 
@@ -238,7 +260,7 @@ The DNS engine provides:
 - at most 16 returned addresses per resolution
 - resolver failure isolation
 
-System DNS is still the only network resolver in `0.4.0-alpha.1`. DoH, DoT, DoQ and Fake-IP are future implementations behind the resolver boundary.
+System DNS is still the only network resolver in `0.5.0-alpha.1`. DoH, DoT, DoQ and Fake-IP are future implementations behind the resolver boundary.
 
 DNS hosts assets are separate from blocklists:
 
@@ -299,6 +321,7 @@ Validate verified TLS endpoint syntax:
 
 ```bash
 ./target/release/commeatus check --config examples/tls-proxy-outbound.conf
+./target/release/commeatus check --config examples/trojan-outbound.conf
 ```
 
 Run:
@@ -368,15 +391,14 @@ All configured listener sockets must bind before service starts. Per-flow/sessio
 
 ## Current limitations
 
-`0.4.0-alpha.1` does **not** include:
+`0.5.0-alpha.1` does **not** include:
 
 - inbound SOCKS5/HTTP authentication
 - upstream SOCKS5/HTTP authentication
 - ordinary forward-HTTP proxying
 - SOCKS5 UDP fragmentation/reassembly
-- proxy UDP execution
 - endpoint groups, health selection or load balancing
-- Shadowsocks, Trojan, VLESS, Hysteria2 or TUIC
+- Shadowsocks, VLESS, Hysteria2 or TUIC
 - TUN interception
 - live TPROXY installation
 - live eBPF loading, policy maps or redirection
@@ -421,6 +443,9 @@ The E2E suite includes real loopback coverage for:
 - HTTP inbound → SOCKS5 outbound protocol → verified TLS transport → TLS SOCKS5 mock → echo, with `.invalid` target preservation
 - trusted test CA + matching TLS identity succeeds; wrong TLS identity fails
 - clean TLS full-duplex relay / `close_notify` shutdown
+- HTTP inbound → native Trojan CONNECT → verified TLS mock, with `.invalid` target preservation
+- SOCKS5 UDP inbound → native Trojan UDP provider → verified framed TLS mock
+- Trojan UDP partial/coalesced frame handling and zero-length datagram delivery
 
 ## Repository layout
 
@@ -458,16 +483,17 @@ Accepted architecture decisions live in `docs/adr/`.
 
 ## Next development slices
 
-After this release line, the highest-value work is:
+After v0.5, the highest-value work is:
 
-1. first encrypted native proxy protocol on the verified transport boundary
-2. proxy UDP execution and a capability-safe datagram abstraction
-3. secure DNS resolvers behind `commeatus-dns`
-4. TPROXY backend and safe attach/cleanup lifecycle
-5. eBPF loader, read-only policy maps, atomic generations and fallback behavior
-6. compatibility importers/API facade
-7. adaptive routing and real-traffic telemetry
-8. low-power executor and comparative power/performance benchmarks
+1. secure DNS resolvers behind `commeatus-dns` (DoH/DoT first, then DoQ/Fake-IP semantics)
+2. TPROXY backend with transactional attach/cleanup and safe fallback
+3. eBPF loader, read-only policy maps, atomic generations and fallback behavior
+4. additional native protocols behind the established provider boundaries (VLESS/Shadowsocks before QUIC-heavy transports)
+5. compatibility importers and a compatibility API facade that terminate at native IR
+6. endpoint groups, health selection and real-traffic telemetry
+7. adaptive/Smart routing constrained by hard policy
+8. low-power global executor plus comparative power/performance benchmarks
+9. Android Root packaging and supervisor/cleanup integration once interception lifecycle is proven
 
 ## Security
 
