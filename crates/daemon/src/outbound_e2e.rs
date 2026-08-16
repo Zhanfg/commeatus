@@ -1,6 +1,6 @@
 use std::{
     io::{self, Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
+    net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::Arc,
     thread,
     time::Duration,
@@ -18,7 +18,10 @@ use crate::{
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_ONLY_DOMAIN: &str = "opaque-target.invalid";
 
-fn spawn_echo_server() -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<()>>)> {
+type TestThread<T> = thread::JoinHandle<io::Result<T>>;
+type TestServer<T> = io::Result<(SocketAddr, TestThread<T>)>;
+
+fn spawn_echo_server() -> TestServer<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let address = listener.local_addr()?;
     let handle = thread::Builder::new()
@@ -45,15 +48,36 @@ fn relay_pair(mut left: TcpStream, mut right: TcpStream) -> io::Result<()> {
     left.set_write_timeout(None)?;
     right.set_read_timeout(None)?;
     right.set_write_timeout(None)?;
+
     let mut left_reader = left.try_clone()?;
     let mut right_writer = right.try_clone()?;
     let uplink = thread::Builder::new()
         .name("commeatus-v03-mock-relay".to_owned())
-        .spawn(move || io::copy(&mut left_reader, &mut right_writer))?;
-    let _ = io::copy(&mut right, &mut left)?;
+        .spawn(move || -> io::Result<u64> {
+            match io::copy(&mut left_reader, &mut right_writer) {
+                Ok(copied) => {
+                    right_writer.shutdown(Shutdown::Write)?;
+                    Ok(copied)
+                }
+                Err(error) => {
+                    let _ = left_reader.shutdown(Shutdown::Both);
+                    let _ = right_writer.shutdown(Shutdown::Both);
+                    Err(error)
+                }
+            }
+        })?;
+
+    let downlink = io::copy(&mut right, &mut left);
+    if downlink.is_ok() {
+        left.shutdown(Shutdown::Write)?;
+    } else {
+        let _ = left.shutdown(Shutdown::Both);
+        let _ = right.shutdown(Shutdown::Both);
+    }
     uplink
         .join()
         .map_err(|_| io::Error::other("mock proxy relay panicked"))??;
+    downlink?;
     Ok(())
 }
 
@@ -91,9 +115,7 @@ fn read_socks_target(stream: &mut TcpStream) -> io::Result<(String, u16)> {
     Ok((host, u16::from_be_bytes(port)))
 }
 
-fn spawn_mock_socks5_proxy(
-    echo: SocketAddr,
-) -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<(String, u16)>>)> {
+fn spawn_mock_socks5_proxy(echo: SocketAddr) -> TestServer<(String, u16)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let address = listener.local_addr()?;
     let handle = thread::Builder::new()
@@ -137,9 +159,7 @@ fn read_http_head(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     Ok(head)
 }
 
-fn spawn_mock_http_proxy(
-    echo: SocketAddr,
-) -> io::Result<(SocketAddr, thread::JoinHandle<io::Result<String>>)> {
+fn spawn_mock_http_proxy(echo: SocketAddr) -> TestServer<String> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let address = listener.local_addr()?;
     let handle = thread::Builder::new()
